@@ -190,6 +190,7 @@ The file handle is opened only after the DB row is fetched and the lock is relea
 - The sweeper is a single background thread. It performs a short delete transaction, then unlinks blobs outside the lock.
 - Request handlers never wait for the sweeper.
 - `MVar` contention is acceptable because the service is low-throughput and SQLite serializes writes anyway.
+- **ARCH-015** Both executables are linked with the default RTS options `-N -A16m`. The threaded RTS therefore uses every available capability, so concurrent compression, decompression, and TLS work is not serialized on one core, and each capability gets a 16 MiB allocation area to reduce minor-GC frequency on streaming paths. A single upload or download still runs on one capability. Operators may override the defaults with `+RTS`, for example `+RTS -N2` in a CPU-quota-limited container or `+RTS -A4m` to reduce resident memory.
 
 ## 8. Server startup and shutdown order
 
