@@ -287,7 +287,7 @@ Run the built `pigeon-client` against a test server. Use `readProcessWithExitCod
 - **TEST-252** Manual: 1 GiB upload with `pigeon-client`; monitor server RSS. It must not grow linearly with file size.
 - **TEST-253** Manual: 1 GiB download with `curl`; monitor server RSS.
 - **TEST-254** Manual: 1 GiB upload with `--no-compress`; verify the server compresses at rest and memory stays bounded.
-- **TEST-255** Manual: 1 GiB gzip upload from a precompressed stream; verify the second pass computes the correct original size with bounded memory.
+- **TEST-255** Manual: 1 GiB gzip upload from a precompressed stream; verify single-pass validation computes the correct original size with bounded memory.
 - **TEST-256** Interrupt a large download mid-stream; the server stays healthy and the temp/blob state is unchanged.
 - **TEST-257** Interrupt a large upload mid-stream; no metadata row is committed and the temp file is cleaned up after the grace period.
 

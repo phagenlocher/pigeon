@@ -148,7 +148,7 @@ server handler
   ▼
   ├─ Content-Encoding: gzip ──▶ sinkFile temp (bytes as received)
   │                              │
-  │                              └─ second streaming pass: ungzip + count original
+  │                              └─ same pass: ungzip + count original
   │                                 (validates gzip, computes size_original)
   │
   └─ identity ─────────────────▶ countBytes + gzipConduit + sinkFile temp
