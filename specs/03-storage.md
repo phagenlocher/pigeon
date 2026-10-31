@@ -158,8 +158,8 @@ data StoreRequest = StoreRequest
    - Stream the request body into the temp file exactly as received.
    - Count received (stored) bytes.
    - If `max_upload_size > 0` and received bytes exceed it, abort with `payload_too_large`.
-   - After the body ends, stream the temp file through `ungzip` into a counting sink.
-   - If `ungzip` throws, abort with `invalid_request` (bad gzip).
+   - In the same pass, feed each received chunk to `ungzip` and count the decompressed bytes.
+   - If `ungzip` throws, abort with `invalid_request` (bad gzip). A corrupt stream is detected as soon as the failing chunk arrives.
    - If `max_upload_size > 0` and the decompressed byte count exceeds it, abort with `payload_too_large`.
    - The decompressed count is `size_original`.
 4. **STORE-063** If `srContentEncoding` is absent or `identity`:
@@ -176,9 +176,11 @@ data StoreRequest = StoreRequest
 
 If any step before the rename fails, remove the temp file. If the insert fails after the rename, remove the final blob and return an error. If the process crashes between rename and insert, the orphan sweeper removes the blob after the grace period.
 
-### 7.3 Why a second pass for gzip uploads
+### 7.3 Why gzip uploads are validated in one pass
 
-The client sends compressed bytes. The server must know the original size for listing and for the upload-size policy. The gzip trailer's `ISIZE` field is only 32-bit and is not reliable for files larger than 4 GiB. A single streaming decompression pass after the write is simple, validates the gzip stream, and keeps memory constant. The extra read is acceptable for a low-throughput service.
+The client sends compressed bytes. The server must know the original size for listing and for the upload-size policy. The gzip trailer's `ISIZE` field is only 32-bit and is not reliable for files larger than 4 GiB, and it does not prove that the stream is intact. A single streaming decompression pass is therefore still required.
+
+That pass runs while the bytes are written, not after them: each received chunk is stored exactly as received and, in the same iteration, fed to `ungzip` and counted. This keeps memory constant, validates the stream and computes `size_original` without a second read of the temp file, overlaps decompression with the network transfer, and rejects a corrupt stream early. The tradeoff is that the decompression cost sits on the receive path instead of after it; the total CPU work is unchanged.
 
 ### 7.4 Size limits
 

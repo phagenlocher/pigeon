@@ -126,7 +126,7 @@ Semantics:
 - **NET-021** If `expires_in` is absent, the server computes `expires_at = now + default_expiry`.
 - **NET-022** If `expires_in` is present, it MUST be an integer in `1 .. max_expiry_seconds`; otherwise `400 invalid_request`.
 - **NET-023** The server always stores the blob gzip-compressed:
-  - `Content-Encoding: gzip`: received bytes are written to a temp file as-is, then streamed through `ungzip` once to validate and compute the original size.
+  - `Content-Encoding: gzip`: received bytes are written to a temp file as-is while the same chunks are streamed through `ungzip`, in one pass, to validate the stream and compute the original size.
   - absent/`identity`: received bytes are counted and gzip-compressed while writing to the temp file.
 - **NET-024** Invalid gzip data returns `400 invalid_request` and removes the temp file.
 - **NET-025** If `max_upload_size > 0`, the server enforces it against both received bytes and decompressed original bytes. Exceeding it returns `413 payload_too_large` and removes the temp file.
@@ -249,7 +249,7 @@ Vary: Accept-Encoding
 - **NET-080** `Content-Encoding: gzip` means the request body is a valid gzip stream.
 - **NET-081** Absent or `Content-Encoding: identity` means raw bytes.
 - **NET-082** Any other value returns `415 unsupported_media_type`.
-- **NET-083** The server does not trust the declared original size. It computes the original size by decompressing the gzip temp file once.
+- **NET-083** The server does not trust the declared original size. It computes the original size by decompressing the gzip stream once, in the same pass that writes the received bytes.
 
 ### 6.2 Download
 

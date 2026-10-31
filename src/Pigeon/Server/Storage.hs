@@ -28,14 +28,15 @@ import Control.Exception.Safe (
   throwIO,
   try,
  )
-import Control.Monad (when)
+import Control.Monad (void, when)
 import Crypto.Random (getRandomBytes)
 import Data.ByteString (ByteString)
 import Data.ByteString qualified as BS
 import Data.ByteString.Char8 qualified as B8
 import Data.Char (isAsciiUpper)
 import Data.Conduit
-import Data.Conduit.Combinators (sinkHandle, sinkNull, sourceFile)
+import Data.Conduit.Combinators (sinkHandle, sinkNull)
+import Data.Conduit.Internal (zipSinks)
 import Data.IORef
 import Data.Int (Int64)
 import Data.List (isSuffixOf)
@@ -252,9 +253,8 @@ doStore storage db StoreRequest{..} createdAt = do
       storedRef <- newIORef 0
 
       case contentEncoding of
-        Just "gzip" -> do
-          writeGzipBody srBody temp srMaxUploadSize storedRef
-          validateGzip temp srMaxUploadSize originalRef
+        Just "gzip" ->
+          writeGzipBody srBody temp srMaxUploadSize storedRef originalRef
         _ -> do
           writeIdentityBody srBody temp srMaxUploadSize originalRef
           storedBytes <- getFileSize temp
@@ -358,29 +358,23 @@ writeIdentityBody body temp limit originalRef =
         .| gzipConduit
         .| sinkHandle handle
 
--- | Gzip uploads are written as received, then validated in a second pass.
-writeGzipBody :: UploadBody -> FilePath -> Int64 -> IORef Int64 -> IO ()
-writeGzipBody body temp limit storedRef =
-  bracket (openTemp temp) safeClose $ \handle ->
-    runConduitRes $
-      body
-        .| countBytesLimited limit storedRef
-        .| sinkHandle handle
+{- | Write a gzip upload as received while validating the stream and counting
+the decompressed size in the same pass (STORE-062).
 
-validateGzip :: FilePath -> Int64 -> IORef Int64 -> IO ()
-validateGzip temp limit originalRef = do
-  result <-
-    try
-      ( runConduitRes $
-          sourceFile temp
-            .| ungzipConduit
-            .| countBytesLimited limit originalRef
-            .| sinkNull
-      ) ::
-      IO (Either SomeException ())
-  case result of
-    Right () -> pure ()
-    Left err -> throwIO err
+Each received chunk is written to the temp file and fed to the inflater before
+the next chunk is read, so the stored bytes stay exactly as received, memory
+stays constant, and a corrupt stream is rejected as soon as it is detected
+rather than after the whole body has been written.
+-}
+writeGzipBody :: UploadBody -> FilePath -> Int64 -> IORef Int64 -> IORef Int64 -> IO ()
+writeGzipBody body temp limit storedRef originalRef =
+  bracket (openTemp temp) safeClose $ \handle ->
+    void
+      $ runConduitRes
+      $ body
+        .| zipSinks
+          (countBytesLimited limit storedRef .| sinkHandle handle)
+          (ungzipConduit .| countBytesLimited limit originalRef .| sinkNull)
 
 -- * Helpers
 

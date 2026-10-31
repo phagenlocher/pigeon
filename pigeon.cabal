@@ -113,9 +113,13 @@ executable pigeon-server
     base,
     pigeon,
 
+  -- Use every capability for concurrent gzip/TLS work and give each one a
+  -- 16 MiB allocation area to cut minor-GC frequency on streaming paths.
+  -- Operators can override with +RTS -Nn, e.g. in cgroup-limited containers.
   ghc-options:
     -threaded
     -rtsopts
+    "-with-rtsopts=-N -A16m"
 
 executable pigeon-client
   import: warnings, shared
@@ -125,9 +129,12 @@ executable pigeon-client
     base,
     pigeon,
 
+  -- Same runtime defaults as the server so uploads can use parallel GC.
+  -- Override with +RTS -N1 in constrained environments.
   ghc-options:
     -threaded
     -rtsopts
+    "-with-rtsopts=-N -A16m"
 
 test-suite pigeon-test
   import: warnings, shared

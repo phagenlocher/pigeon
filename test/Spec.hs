@@ -15,7 +15,7 @@ import Data.ByteString.Char8 qualified as B8
 import Data.ByteString.Lazy qualified as LBS
 import Data.Conduit (runConduitRes, yield, (.|))
 import Data.Conduit.Combinators (sinkList)
-import Data.Conduit.Zlib (ungzip)
+import Data.Conduit.Zlib (gzip, ungzip)
 import Data.Either (isLeft, isRight)
 import Data.IORef (IORef, atomicModifyIORef', newIORef, readIORef)
 import Data.Int (Int64)
@@ -37,6 +37,7 @@ import System.Directory (
   removeFile,
  )
 import System.FilePath ((</>))
+import System.IO (IOMode (ReadMode), withBinaryFile)
 import System.Posix.Files (
   createSymbolicLink,
   fileMode,
@@ -191,6 +192,25 @@ main = hspec $ do
       parseAcceptEncoding "br" `shouldBe` AcceptIdentity
       parseAcceptEncoding "gzip;q=oops" `shouldBe` AcceptIdentity
 
+  describe "chunked file source" $ do
+    it "reads a handle in the requested chunk size and preserves bytes" $ withTempDataDir $ \dir -> do
+      let path = dir </> "chunks.bin"
+          payload = BS.replicate (300 * 1024) 7
+          size = 128 * 1024
+      BS.writeFile path payload
+      chunks <-
+        withBinaryFile path ReadMode $ \handle ->
+          runConduitRes (sourceHandleChunked size handle .| sinkList)
+      map BS.length chunks `shouldBe` [size, size, BS.length payload - 2 * size]
+      BS.concat chunks `shouldBe` payload
+    it "yields no chunks for an empty file" $ withTempDataDir $ \dir -> do
+      let path = dir </> "empty.bin"
+      BS.writeFile path BS.empty
+      chunks <-
+        withBinaryFile path ReadMode $ \handle ->
+          runConduitRes (sourceHandleChunked (128 * 1024) handle .| sinkList)
+      chunks `shouldBe` []
+
   describe "JSON" $ do
     it "serializes FileInfo with the documented field names" $ do
       let now = epochToUtc 1761955200
@@ -246,6 +266,36 @@ main = hspec $ do
       BS.concat raw `shouldBe` payload
       doesFileExist (dir </> "pigeon.db-wal") `shouldReturn` False
       closeDb db
+    it "stores gzip uploads as received and reports the original size" $ withTempDataDir $ \dir -> do
+      storage <- initStorage defaultStorageHooks dir
+      db <- openDb (dir </> "pigeon.db")
+      migrate db
+      now <- getCurrentTime
+      let payload = BS.concat (replicate 200 "compressible payload ")
+      encoded <- gzipBytes payload
+      stored <-
+        storeUpload storage db (storeRequest now (Just "gzip") encoded)
+          >>= either (fail . show) pure
+      sfSize stored `shouldBe` fromIntegral (BS.length payload)
+      sfStoredSize stored `shouldBe` fromIntegral (BS.length encoded)
+      blob <- BS.readFile (blobPath storage (sfId stored))
+      blob `shouldBe` encoded
+      closeDb db
+    it "stores every received gzip byte even after the stream ends" $ withTempDataDir $ \dir -> do
+      storage <- initStorage defaultStorageHooks dir
+      db <- openDb (dir </> "pigeon.db")
+      migrate db
+      now <- getCurrentTime
+      let payload = "payload"
+      compressed <- gzipBytes payload
+      let received = compressed <> "trailing bytes"
+      stored <-
+        storeUpload storage db (storeRequest now (Just "gzip") received)
+          >>= either (fail . show) pure
+      sfSize stored `shouldBe` fromIntegral (BS.length payload)
+      blob <- BS.readFile (blobPath storage (sfId stored))
+      blob `shouldBe` received
+      closeDb db
     it "rejects an invalid gzip upload and removes the temp file" $ withTempDataDir $ \dir -> do
       storage <- initStorage defaultStorageHooks dir
       db <- openDb (dir </> "pigeon.db")
@@ -263,6 +313,9 @@ main = hspec $ do
               }
       result <- storeUpload storage db request
       result `shouldSatisfy` isLeft
+      listLiveFiles db now `shouldReturn` []
+      listBlobIds storage `shouldReturn` []
+      listTempFiles storage `shouldReturn` []
       closeDb db
     it "enforces the upload size limit for identity uploads" $ withTempDataDir $ \dir -> do
       storage <- initStorage defaultStorageHooks dir
@@ -281,6 +334,31 @@ main = hspec $ do
               }
       result <- storeUpload storage db request
       result `shouldBe` Left StorageTooLarge
+      closeDb db
+    it "enforces the upload size limit on decompressed gzip bytes" $ withTempDataDir $ \dir -> do
+      storage <- initStorage defaultStorageHooks dir
+      db <- openDb (dir </> "pigeon.db")
+      migrate db
+      now <- getCurrentTime
+      let payload = B8.replicate 10000 'a'
+          limit = 4096 :: Int64
+      encoded <- gzipBytes payload
+      BS.length encoded `shouldSatisfy` (< fromIntegral limit)
+      let request =
+            StoreRequest
+              { srFilename = "bomb.gz",
+                srContentType = "application/octet-stream",
+                srExpiresAt = addUTCTime 3600 now,
+                srPasswordHash = Nothing,
+                srContentEncoding = Just "gzip",
+                srMaxUploadSize = limit,
+                srBody = yieldBody encoded
+              }
+      result <- storeUpload storage db request
+      result `shouldBe` Left StorageTooLarge
+      listLiveFiles db now `shouldReturn` []
+      listBlobIds storage `shouldReturn` []
+      listTempFiles storage `shouldReturn` []
       closeDb db
     it "fails the upload and removes state when the temp file cannot be fsynced" $
       withTempDataDir $ \dir -> do
@@ -574,6 +652,10 @@ modeOf path = (\status -> fileMode status .&. 0o777) <$> getFileStatus path
 
 yieldBody :: BS.ByteString -> UploadBody
 yieldBody = yield
+
+-- | Compress bytes into a single gzip payload.
+gzipBytes :: BS.ByteString -> IO BS.ByteString
+gzipBytes bytes = BS.concat <$> runConduitRes (yield bytes .| gzip .| sinkList)
 
 -- | A minimal request for storage-level upload tests.
 storeRequest :: UTCTime -> Maybe BS.ByteString -> BS.ByteString -> StoreRequest

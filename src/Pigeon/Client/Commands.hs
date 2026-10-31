@@ -14,7 +14,6 @@ import Data.ByteString qualified as BS
 import Data.ByteString.Base64.URL qualified as B64URL
 import Data.ByteString.Lazy qualified as LBS
 import Data.Conduit
-import Data.Conduit.Combinators (sourceHandle)
 import Data.IORef
 import Data.Int (Int64)
 import Data.Maybe (fromMaybe)
@@ -38,7 +37,7 @@ import Pigeon.Client.Output (
   formatSize,
  )
 import Pigeon.Password (validatePassword)
-import Pigeon.Streaming (countBytes, gzipConduit)
+import Pigeon.Streaming (countBytes, gzipConduit, sourceHandleChunked)
 import Pigeon.Types (
   ApiError (..),
   ApiErrorEnvelope (..),
@@ -115,6 +114,12 @@ runUpload cfg clientApi options = do
                 else putStr (T.unpack (formatFileInfo now info))
               pure 0
 
+{- | Bytes read from the input file per chunk. Larger reads cut syscall and
+conduit-step overhead; the tradeoff is coarser progress updates on slow links.
+-}
+uploadChunkSize :: Int
+uploadChunkSize = 128 * 1024
+
 performUpload ::
   ClientConfig ->
   ClientApi ->
@@ -145,7 +150,7 @@ performUpload cfg clientApi options filename contentType compression passwordHea
       <> maybe "identity" (const "gzip") compression
   started <- getCurrentTime
   let body =
-        sourceHandle handle
+        sourceHandleChunked uploadChunkSize handle
           .| countBytes counter
           .| progressConduit showProgress filename totalSize counter
           .| (if uoNoCompress options then passThrough else gzipConduit)
