@@ -22,6 +22,27 @@ import Data.Text qualified as T
 import Data.Text.Encoding (encodeUtf8)
 import Data.Time (UTCTime, diffUTCTime, getCurrentTime)
 import Network.HTTP.Types.Status (statusCode)
+import Servant.Client (ClientError (..), responseBody, responseStatusCode)
+import Servant.Client.Core.Response (Response)
+import System.Directory (doesFileExist, getFileSize)
+import System.Exit (ExitCode (..))
+import System.FilePath (takeFileName)
+import System.IO (
+  Handle,
+  IOMode (ReadMode),
+  hClose,
+  hFlush,
+  hGetEcho,
+  hIsTerminalDevice,
+  hPutStr,
+  hPutStrLn,
+  hSetEcho,
+  openBinaryFile,
+  stderr,
+  stdin,
+ )
+import System.Posix.Files (FileStatus, getFileStatus, isRegularFile)
+
 import Pigeon.Client.Api (ApiClient (..), ClientApi (..), mkClientApi, runApi)
 import Pigeon.Client.Config (
   ClientCommand (..),
@@ -45,26 +66,6 @@ import Pigeon.Types (
   FileInfo (..),
   secretText,
  )
-import Servant.Client (ClientError (..), responseBody, responseStatusCode)
-import Servant.Client.Core.Response (Response)
-import System.Directory (doesFileExist, getFileSize)
-import System.Exit (ExitCode (..))
-import System.FilePath (takeFileName)
-import System.IO (
-  Handle,
-  IOMode (ReadMode),
-  hClose,
-  hFlush,
-  hGetEcho,
-  hIsTerminalDevice,
-  hPutStr,
-  hPutStrLn,
-  hSetEcho,
-  openBinaryFile,
-  stderr,
-  stdin,
- )
-import System.Posix.Files (FileStatus, getFileStatus, isRegularFile)
 
 -- | Failure with a CLI exit code and a user-facing message.
 data Failure = Failure
