@@ -1,0 +1,8 @@
+{
+  "password": "foobar",
+  "salt": "abcdefghijklmnop",
+  "algorithm": "sha512",
+  "iterations": 25000,
+  "outputLength": 64,
+  "hash": "sha512:25000:YWJjZGVmZ2hpamtsbW5vcA==:JRElYYrOMe9OIV4LDxaLTgO9ho8fFBVofXoQcdngi7AcuH6Amvmlj2B0y6y1UtQciXXBepSCS+rpy8/vDDQvoA=="
+}
