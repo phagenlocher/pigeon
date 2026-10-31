@@ -22,27 +22,6 @@ import Data.Text qualified as T
 import Data.Text.Encoding (encodeUtf8)
 import Data.Time (UTCTime, diffUTCTime, getCurrentTime)
 import Network.HTTP.Types.Status (statusCode)
-import Servant.Client (ClientError (..), responseBody, responseStatusCode)
-import Servant.Client.Core.Response (Response)
-import System.Directory (doesFileExist, getFileSize)
-import System.Exit (ExitCode (..))
-import System.FilePath (takeFileName)
-import System.IO (
-  Handle,
-  IOMode (ReadMode),
-  hClose,
-  hFlush,
-  hGetEcho,
-  hIsTerminalDevice,
-  hPutStr,
-  hPutStrLn,
-  hSetEcho,
-  openBinaryFile,
-  stderr,
-  stdin,
- )
-import System.Posix.Files (FileStatus, getFileStatus, isRegularFile)
-
 import Pigeon.Client.Api (ApiClient (..), ClientApi (..), mkClientApi, runApi)
 import Pigeon.Client.Config (
   ClientCommand (..),
@@ -64,8 +43,29 @@ import Pigeon.Types (
   ApiErrorEnvelope (..),
   FileId (..),
   FileInfo (..),
+  epochToUtc,
   secretText,
  )
+import Servant.Client (ClientError (..), responseBody, responseStatusCode)
+import Servant.Client.Core.Response (Response)
+import System.Directory (doesFileExist, getFileSize)
+import System.Exit (ExitCode (..))
+import System.FilePath (takeFileName)
+import System.IO (
+  Handle,
+  IOMode (ReadMode),
+  hClose,
+  hFlush,
+  hGetEcho,
+  hIsTerminalDevice,
+  hPutStr,
+  hPutStrLn,
+  hSetEcho,
+  openBinaryFile,
+  stderr,
+  stdin,
+ )
+import System.Posix.Files (FileStatus, getFileStatus, isRegularFile)
 
 -- | Failure with a CLI exit code and a user-facing message.
 data Failure = Failure
@@ -409,23 +409,23 @@ progressConduit ::
   Bool -> Text -> Int64 -> IORef Int64 -> ConduitT BS.ByteString BS.ByteString (ResourceT IO) ()
 progressConduit enabled filename total counter
   | not enabled = awaitForever yield
-  | otherwise = go Nothing
+  | otherwise = go (epochToUtc 0)
  where
-  go :: Maybe UTCTime -> ConduitT BS.ByteString BS.ByteString (ResourceT IO) ()
+  go :: UTCTime -> ConduitT BS.ByteString BS.ByteString (ResourceT IO) ()
   go lastPrint =
     await >>= \case
       Nothing -> pure ()
       Just chunk -> do
         now <- liftIO getCurrentTime
-        let elapsed :: Maybe Double
-            elapsed = fmap (realToFrac . diffUTCTime now) lastPrint
+        let elapsed :: Double
+            elapsed = realToFrac $ diffUTCTime now lastPrint
             shouldPrintProgress :: Bool
-            shouldPrintProgress = maybe True (\x -> x >= progressIntervalMs / 1000) elapsed
+            shouldPrintProgress = elapsed * 1000 >= progressIntervalMs
         when shouldPrintProgress $ do
           current <- liftIO (readIORef counter)
           liftIO (printProgress filename total current)
         yield chunk
-        go (if shouldPrintProgress then Just now else lastPrint)
+        go (if shouldPrintProgress then now else lastPrint)
 
 printProgress :: Text -> Int64 -> Int64 -> IO ()
 printProgress filename total current = do
