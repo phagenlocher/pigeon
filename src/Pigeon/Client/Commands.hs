@@ -17,7 +17,7 @@ import Data.Conduit
 import Data.IORef
 import Data.Int (Int64)
 import Data.Maybe (fromMaybe)
-import Data.Text (Text)
+import Data.Text (Text, dropWhileEnd)
 import Data.Text qualified as T
 import Data.Text.Encoding (encodeUtf8)
 import Data.Time (UTCTime, diffUTCTime, getCurrentTime)
@@ -212,7 +212,7 @@ resolvePassword StdinPassword = do
     Left _ -> pure (Left (Failure 2 "usage_error" "could not read password from stdin"))
     Right line ->
       pure $ do
-        password <- validatePasswordInput (T.pack (dropTrailingCR line))
+        password <- validatePasswordInput (dropTrailingCR $ T.pack line)
         Right (Just (encodePassword password))
 resolvePassword PromptPassword = do
   terminal <- hIsTerminalDevice stdin
@@ -241,10 +241,10 @@ promptPassword =
     hFlush stderr
     password <- getLine
     hPutStrLn stderr ""
-    pure (T.pack (dropTrailingCR password))
+    pure (dropTrailingCR $ T.pack password)
 
-dropTrailingCR :: String -> String
-dropTrailingCR = reverse . dropWhile (== '\r') . reverse
+dropTrailingCR :: Text -> Text
+dropTrailingCR = dropWhileEnd (== '\r')
 
 -- * List
 
