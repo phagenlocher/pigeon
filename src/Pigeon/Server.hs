@@ -12,10 +12,12 @@ import Control.Exception.Safe (SomeException, bracket, catch, finally)
 import Control.Monad (when)
 import Control.Monad.IO.Class (liftIO)
 import Control.Monad.Reader (ask)
-import Data.ByteString.Char8 qualified as B8
 import Data.Proxy (Proxy (..))
 import Data.Tagged (Tagged (..))
 import Data.Text qualified as T
+import Data.Text.Encoding (decodeUtf8With)
+import Data.Text.Encoding.Error (lenientDecode)
+import Data.Text.IO qualified as TIO
 import Data.Time (getCurrentTime)
 import Network.HTTP.Types (ResponseHeaders, hCacheControl)
 import Network.Wai (
@@ -32,7 +34,7 @@ import Network.Wai.Handler.Warp qualified as Warp
 import Network.Wai.Handler.WarpTLS qualified as WarpTLS
 import Servant (ServerT, hoistServer, serve, (:<|>) (..))
 import System.Exit (ExitCode (..), exitWith)
-import System.IO (hPutStrLn, stderr)
+import System.IO (stderr)
 import System.Posix.Process (exitImmediately)
 import System.Posix.Signals (
   Handler (Catch),
@@ -154,7 +156,7 @@ runServer cfg =
 
   reportUnsafePath :: UnsafePath -> IO ()
   reportUnsafePath (UnsafePath message) = do
-    hPutStrLn stderr ("error: " <> T.unpack message)
+    TIO.hPutStrLn stderr ("error: " <> message)
     exitWith (ExitFailure 1)
 
 serveForever :: App ()
@@ -226,7 +228,7 @@ warpSettings env =
           Nothing -> ""
           Just request -> T.intercalate "/" ("/" : pathInfo request)
         method :: T.Text
-        method = maybe "" (T.pack . B8.unpack . requestMethod) maybeRequest
+        method = maybe "" (decodeUtf8With lenientDecode . requestMethod) maybeRequest
     logError (aeLogger env) $
       "request failed method="
         <> method

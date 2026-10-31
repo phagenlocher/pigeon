@@ -14,10 +14,11 @@ import Data.Int (Int64)
 import Data.Maybe (fromMaybe)
 import Data.Text (Text)
 import Data.Text qualified as T
+import Data.Text.IO qualified as TIO
 import Options.Applicative
 import Servant.Client.Core (BaseUrl (..), Scheme (..))
 import System.Exit (ExitCode (..), exitWith)
-import System.IO (hPutStrLn, stderr)
+import System.IO (stderr)
 
 import Pigeon.Config (
   lookupEnvText,
@@ -117,9 +118,9 @@ globalParser :: Parser RawGlobal
 globalParser =
   RawGlobal
     <$> optional
-      (T.pack <$> strOption (long "server" <> metavar "URL" <> help "Server base URL (env: PIGEON_SERVER)"))
+      (strOption (long "server" <> metavar "URL" <> help "Server base URL (env: PIGEON_SERVER)"))
     <*> optional
-      (T.pack <$> strOption (long "token" <> metavar "TOKEN" <> help "Bearer token (env: PIGEON_TOKEN)"))
+      (strOption (long "token" <> metavar "TOKEN" <> help "Bearer token (env: PIGEON_TOKEN)"))
     <*> optional
       (strOption (long "token-file" <> metavar "FILE" <> help "Read the token from the first line of FILE"))
     <*> switch (long "insecure" <> help "Disable TLS certificate validation (development only)")
@@ -138,9 +139,9 @@ uploadParser =
               ( durationSecondsOption
                   (long "expires-in" <> metavar "DURATION" <> help "Lifetime; server default when omitted")
               )
-            <*> optional (T.pack <$> strOption (long "name" <> metavar "NAME" <> help "Display filename"))
+            <*> optional (strOption (long "name" <> metavar "NAME" <> help "Display filename"))
             <*> optional
-              (T.pack <$> strOption (long "content-type" <> metavar "TYPE" <> help "Original content type"))
+              (strOption (long "content-type" <> metavar "TYPE" <> help "Original content type"))
             <*> passwordParser
             <*> switch (long "no-compress" <> help "Send the body without gzip compression")
         )
@@ -159,7 +160,7 @@ deleteParser :: Parser ClientCommand
 deleteParser =
   Delete
     <$> ( DeleteOptions
-            <$> some (T.pack <$> argument str (metavar "ID"))
+            <$> some (argument str (metavar "ID"))
             <*> switch (long "yes" <> help "Do not ask for confirmation")
         )
 
@@ -203,17 +204,17 @@ parseClientConfig = do
   envToken <- lookupEnvText "PIGEON_TOKEN"
 
   when (rgQuiet && rgVerbose) $ do
-    hPutStrLn stderr "error: --quiet and --verbose are mutually exclusive"
+    TIO.hPutStrLn stderr "error: --quiet and --verbose are mutually exclusive"
     exitWith (ExitFailure 2)
 
   let serverText = fromMaybe "http://127.0.0.1:8080" (rgServer <|> envServer)
   serverBase <- case normalizeBaseUrl serverText of
     Left message -> do
-      hPutStrLn stderr ("error: --server: " <> T.unpack message)
+      TIO.hPutStrLn stderr ("error: --server: " <> message)
       exitWith (ExitFailure 2)
     Right normalized -> case parseBaseUrlText normalized of
       Left message -> do
-        hPutStrLn stderr ("error: --server: " <> T.unpack message)
+        TIO.hPutStrLn stderr ("error: --server: " <> message)
         exitWith (ExitFailure 2)
       Right base -> pure (base, normalized)
 
@@ -223,16 +224,18 @@ parseClientConfig = do
     Nothing -> pure 3600
     Just seconds | seconds >= 1 -> pure seconds
     Just _ -> do
-      hPutStrLn stderr "error: --timeout must be at least 1s"
+      TIO.hPutStrLn stderr "error: --timeout must be at least 1s"
       exitWith (ExitFailure 2)
 
   validatedCommand <- validateCommand clientCommand
 
   let (baseUrl, serverUrlText) = serverBase
   when ("http://" `T.isPrefixOf` serverUrlText) $
-    hPutStrLn stderr "warning: sending the upload token over plain HTTP; use TLS outside development"
+    TIO.hPutStrLn
+      stderr
+      "warning: sending the upload token over plain HTTP; use TLS outside development"
   when (rgInsecure && "https://" `T.isPrefixOf` serverUrlText) $
-    hPutStrLn stderr "warning: TLS certificate validation is disabled"
+    TIO.hPutStrLn stderr "warning: TLS certificate validation is disabled"
 
   pure
     ClientConfig
@@ -267,9 +270,9 @@ validateCommand = \case
     | null (doIds options) -> usage "error: delete requires at least one id"
     | otherwise -> pure (Delete options)
  where
-  usage :: String -> IO a
+  usage :: Text -> IO a
   usage message = do
-    hPutStrLn stderr message
+    TIO.hPutStrLn stderr message
     exitWith (ExitFailure 2)
 
 validContentType :: Text -> Bool

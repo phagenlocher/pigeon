@@ -12,9 +12,10 @@ module Pigeon.Server.Log (
   requestLogger,
 ) where
 
-import Data.ByteString.Char8 qualified as B8
 import Data.Text (Text)
 import Data.Text qualified as T
+import Data.Text.Encoding (decodeUtf8With)
+import Data.Text.Encoding.Error (lenientDecode)
 import Data.Time (diffUTCTime, getCurrentTime)
 import Data.Time.Format qualified as Time
 import Network.HTTP.Types.Status (statusCode)
@@ -93,7 +94,7 @@ requestLogger logger app request respond
             status = responseStatus response
             message =
               "request method="
-                <> T.pack (B8.unpack (requestMethod request))
+                <> decodeUtf8With lenientDecode (requestMethod request)
                 <> " path="
                 <> path
                 <> " status="

@@ -9,6 +9,7 @@ module Pigeon.Config (
   baseUrlSchemeText,
   requireToken,
   tokenFromSources,
+  exitWithText,
 
   -- * CLI helpers
   parsePositiveInt,
@@ -22,6 +23,7 @@ import Data.Int (Int64)
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Text.IO qualified as TIO
+import Data.Text.Read qualified as TR
 import Options.Applicative
 import Servant.Client.Core (
   BaseUrl (..),
@@ -32,7 +34,6 @@ import Servant.Client.Core (
 import System.Environment (getArgs, lookupEnv)
 import System.Exit (ExitCode (..), exitSuccess, exitWith)
 import System.IO (hPutStrLn, stderr)
-import Text.Read (readMaybe)
 
 import Pigeon.Duration (parseDuration)
 import Pigeon.Types (Secret, mkSecret)
@@ -59,8 +60,10 @@ lookupEnvText :: String -> IO (Maybe Text)
 lookupEnvText name = do
   envValue <- lookupEnv name
   pure $ case envValue of
-    Just v | not (T.null (T.strip (T.pack v))) -> Just (T.pack v)
-    _ -> Nothing
+    Nothing -> Nothing
+    Just raw ->
+      let envText = T.pack raw
+       in if T.null (T.strip envText) then Nothing else Just envText
 
 -- | Read the first line of a token file, stripping trailing CR/LF.
 readTokenFile :: FilePath -> IO (Either Text Text)
@@ -107,8 +110,14 @@ tokenFromSources flagToken tokenFile envToken =
 requireToken :: Either Text Secret -> IO Secret
 requireToken (Right secret) = pure secret
 requireToken (Left message) = do
-  hPutStrLn stderr ("error: " <> T.unpack message)
+  TIO.hPutStrLn stderr ("error: " <> message)
   exitWith (ExitFailure 2)
+
+-- | Write an error line to stderr and exit with the given status code.
+exitWithText :: Int -> Text -> IO a
+exitWithText code message = do
+  TIO.hPutStrLn stderr message
+  exitWith (ExitFailure code)
 
 {- | Parse an absolute @http@ or @https@ base URL with no path, query, or
 fragment. A single trailing slash is accepted and removed.
@@ -120,7 +129,7 @@ normalizeBaseUrl raw
   | otherwise = case parseBaseUrlText raw of
       Left err -> Left err
       Right baseUrl
-        | not (T.null (T.pack (baseUrlPath baseUrl))) ->
+        | not (null (baseUrlPath baseUrl)) ->
             Left "server URL must not contain a path"
         | otherwise -> Right (T.pack (showBaseUrl baseUrl))
  where
@@ -141,15 +150,24 @@ baseUrlSchemeText baseUrl = case baseUrlScheme baseUrl of
 
 -- | Parse a strictly positive integer.
 parsePositiveInt :: Text -> Either Text Int
-parsePositiveInt raw = case readMaybe (T.unpack raw) of
+parsePositiveInt raw = case parseDecimal raw of
   Just n | n > 0 -> Right n
   _ -> Left "expected a positive integer"
 
 -- | Parse a non-negative byte count.
 parseByteCount :: Text -> Either Text Int64
-parseByteCount raw = case readMaybe (T.unpack raw) of
+parseByteCount raw = case parseDecimal raw of
   Just n | n >= 0 -> Right n
   _ -> Left "expected a non-negative integer"
+
+{- | Read a decimal integer that consumes its whole input, ignoring surrounding
+whitespace.
+-}
+parseDecimal :: (Integral a) => Text -> Maybe a
+parseDecimal raw =
+  case TR.decimal (T.strip raw) of
+    Right (n, rest) | T.null rest -> Just n
+    _ -> Nothing
 
 -- | An option whose value is parsed with 'parseDuration'.
 durationOption :: Mod OptionFields Text -> Parser Text
