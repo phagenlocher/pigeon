@@ -1,5 +1,6 @@
 -- | Streaming helpers: gzip, counting, and @Accept-Encoding@ negotiation.
 module Pigeon.Streaming (
+  sourceHandleChunked,
   gzipConduit,
   ungzipConduit,
   countBytes,
@@ -17,6 +18,7 @@ import Control.Monad.IO.Class (liftIO)
 import Control.Monad.Primitive (PrimMonad)
 import Control.Monad.Trans.Resource (ResourceT)
 import Data.ByteString (ByteString)
+import Data.ByteString qualified as BS
 import Data.ByteString.Char8 qualified as B8
 import Data.Char (isAsciiUpper)
 import Data.Conduit
@@ -24,6 +26,7 @@ import Data.Conduit.Zlib (gzip, ungzip)
 import Data.IORef
 import Data.Int (Int64)
 import Data.Maybe (fromMaybe, mapMaybe)
+import System.IO (Handle)
 
 -- | Gzip compression conduit (level 6, the zlib default).
 gzipConduit :: (MonadThrow m, PrimMonad m) => ConduitT ByteString ByteString m ()
@@ -32,6 +35,21 @@ gzipConduit = gzip
 -- | Streaming gzip decompression.
 ungzipConduit :: (MonadThrow m, PrimMonad m) => ConduitT ByteString ByteString m ()
 ungzipConduit = ungzip
+
+{- | Stream a handle in chunks of up to @size@ bytes.
+
+Short reads are passed through as they arrive, and an empty read ends the
+stream. A non-positive @size@ is treated as one byte.
+-}
+sourceHandleChunked :: Int -> Handle -> ConduitT i ByteString (ResourceT IO) ()
+sourceHandleChunked size handle = go
+ where
+  chunkSize = max 1 size
+  go = do
+    chunk <- liftIO (BS.hGetSome handle chunkSize)
+    if BS.null chunk
+      then pure ()
+      else yield chunk >> go
 
 -- | Increment a counter for each chunk and pass the chunk through.
 countBytes :: IORef Int64 -> ConduitT ByteString ByteString (ResourceT IO) ()

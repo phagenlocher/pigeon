@@ -115,6 +115,9 @@ Why `ResourceT IO`:
 `Pigeon.Streaming` provides:
 
 ```haskell
+sourceHandleChunked :: Int -> Handle -> ConduitT i ByteString (ResourceT IO) ()
+-- Reads up to the given number of bytes per chunk from a Handle.
+
 gzipConduit :: ConduitT ByteString ByteString (ResourceT IO) ()
 ungzipConduit :: ConduitT ByteString ByteString (ResourceT IO) ()
 
@@ -132,7 +135,7 @@ Use `Data.Conduit.Zlib` (`gzip`, `ungzip`) from `conduit-extra`. Do not use lazy
 
 ```
 client file
-  │  sourceHandle (64 KiB chunks)
+  │  sourceHandleChunked (128 KiB chunks)
   ▼
 countBytes (original size + progress)
   │

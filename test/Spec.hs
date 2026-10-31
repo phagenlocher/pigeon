@@ -37,6 +37,7 @@ import System.Directory (
   removeFile,
  )
 import System.FilePath ((</>))
+import System.IO (IOMode (ReadMode), withBinaryFile)
 import System.Posix.Files (
   createSymbolicLink,
   fileMode,
@@ -190,6 +191,25 @@ main = hspec $ do
       parseAcceptEncoding "br, gzip" `shouldBe` AcceptGzip
       parseAcceptEncoding "br" `shouldBe` AcceptIdentity
       parseAcceptEncoding "gzip;q=oops" `shouldBe` AcceptIdentity
+
+  describe "chunked file source" $ do
+    it "reads a handle in the requested chunk size and preserves bytes" $ withTempDataDir $ \dir -> do
+      let path = dir </> "chunks.bin"
+          payload = BS.replicate (300 * 1024) 7
+          size = 128 * 1024
+      BS.writeFile path payload
+      chunks <-
+        withBinaryFile path ReadMode $ \handle ->
+          runConduitRes (sourceHandleChunked size handle .| sinkList)
+      map BS.length chunks `shouldBe` [size, size, BS.length payload - 2 * size]
+      BS.concat chunks `shouldBe` payload
+    it "yields no chunks for an empty file" $ withTempDataDir $ \dir -> do
+      let path = dir </> "empty.bin"
+      BS.writeFile path BS.empty
+      chunks <-
+        withBinaryFile path ReadMode $ \handle ->
+          runConduitRes (sourceHandleChunked (128 * 1024) handle .| sinkList)
+      chunks `shouldBe` []
 
   describe "JSON" $ do
     it "serializes FileInfo with the documented field names" $ do
