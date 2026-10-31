@@ -149,6 +149,7 @@ serverParserInfo =
         <> header "pigeon-server"
     )
  where
+  versionOption :: Parser (a -> a)
   versionOption =
     infoOption
       (T.unpack pigeonVersion)
@@ -172,7 +173,8 @@ parseServerConfig = do
   envIterations <- fmap T.unpack <$> lookupEnvText "PIGEON_PASSWORD_HASH_ITERATIONS"
 
   raw <- runParser "pigeon-server" serverParserInfo
-  let pick cli env = cli <|> env
+  let pick :: Maybe a -> Maybe a -> Maybe a
+      pick cli env = cli <|> env
       host = fromMaybe "127.0.0.1" (pick (roHost raw) envHost)
       portText = fromMaybe "8080" (pick (roPort raw) envPort)
       dataDirText = fromMaybe "./data" (pick (roDataDir raw) envDataDir)
@@ -230,7 +232,8 @@ parseServerConfig = do
         "error: TLS is enabled by default; supply --tls-cert and --tls-key, or use --no-tls for development"
 
   absoluteDataDir <- normalise <$> makeAbsolute dataDirText
-  let dbPath = case dbText of
+  let dbPath :: FilePath
+      dbPath = case dbText of
         Nothing -> absoluteDataDir </> "pigeon.db"
         Just p
           | isAbsolute p -> normalise p
@@ -241,7 +244,8 @@ parseServerConfig = do
       Right normalized -> pure normalized
       Left err -> die ("error: --public-url: " <> T.unpack err)
     Nothing -> do
-      let scheme = case tlsMode of
+      let scheme :: String
+          scheme = case tlsMode of
             TlsDisabled -> "http"
             TlsEnabled{} -> "https"
           url = T.pack scheme <> "://127.0.0.1:" <> T.pack (show port)
@@ -269,6 +273,7 @@ parseServerConfig = do
         scVerbose = roVerbose raw
       }
  where
+  isLoopback :: String -> Bool
   isLoopback h = h `elem` ["127.0.0.1", "localhost", "::1", "0:0:0:0:0:0:0:1"]
 
 -- | Final cross-field validation shared by the parser and tests.

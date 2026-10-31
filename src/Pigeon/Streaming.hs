@@ -44,7 +44,9 @@ stream. A non-positive @size@ is treated as one byte.
 sourceHandleChunked :: Int -> Handle -> ConduitT i ByteString (ResourceT IO) ()
 sourceHandleChunked size handle = go
  where
+  chunkSize :: Int
   chunkSize = max 1 size
+  go :: ConduitT i ByteString (ResourceT IO) ()
   go = do
     chunk <- liftIO (BS.hGetSome handle chunkSize)
     if BS.null chunk
@@ -91,6 +93,7 @@ parseAcceptEncoding raw
   | B8.all (`elem` (" \t" :: String)) raw = AcceptIdentity
   | otherwise =
       let entries = mapMaybe parseEntry (B8.split ',' raw)
+          lookupQ :: ByteString -> Maybe Double
           lookupQ name = lookup name entries
           gzipQ = fromMaybe 0 (lookupQ "gzip" `orElse` lookupQ "*")
           identityQ = fromMaybe 1 (lookupQ "identity" `orElse` lookupQ "*")
@@ -101,6 +104,7 @@ parseAcceptEncoding raw
                 then AcceptIdentity
                 else NotAcceptable
  where
+  orElse :: Maybe a -> Maybe a -> Maybe a
   orElse (Just x) _ = Just x
   orElse Nothing y = y
 
@@ -114,6 +118,7 @@ parseAcceptEncoding raw
               then Nothing
               else (,) trimmedName <$> parseQ params
 
+  lower :: Char -> Char
   lower c
     | isAsciiUpper c = toEnum (fromEnum c + 32)
     | otherwise = c

@@ -215,6 +215,7 @@ deleteRowsMissingBlob db blobExists = do
     then pure []
     else deleteFileRows db (map sfId missing)
  where
+  check :: StoredFile -> IO (Maybe StoredFile)
   check stored = do
     exists <- blobExists (sfId stored)
     pure (if exists then Nothing else Just stored)
@@ -261,6 +262,7 @@ withImmediate connection action = mask $ \restore -> do
       throwIO err
     Right () -> pure result
  where
+  rollback :: IO ()
   rollback = void (try (execute_ connection "ROLLBACK") :: IO (Either SomeException ()))
 
 -- | Detect a SQLite UNIQUE constraint violation.

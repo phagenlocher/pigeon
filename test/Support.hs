@@ -252,7 +252,8 @@ postForm port fileId body = do
   request <-
     parseRequest
       ("http://127.0.0.1:" <> show port <> "/f/" <> T.unpack (unFileId fileId))
-  let request' =
+  let request' :: Request
+      request' =
         request
           { method = "POST",
             requestHeaders = [("Content-Type", "application/x-www-form-urlencoded")],
@@ -266,7 +267,8 @@ requestWith ::
 requestWith port path method headers body = do
   manager <- newManager defaultManagerSettings
   request <- parseRequest ("http://127.0.0.1:" <> show port <> path)
-  let request' =
+  let request' :: Request
+      request' =
         request
           { method = method,
             requestHeaders = headers,

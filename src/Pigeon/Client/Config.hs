@@ -92,6 +92,7 @@ durationSecondsOption :: Mod OptionFields Int64 -> Parser Int64
 durationSecondsOption =
   option (eitherReader parseReader)
  where
+  parseReader :: String -> Either String Int64
   parseReader raw = case parseDuration (T.pack raw) of
     Left message -> Left (T.unpack message)
     Right seconds -> Right seconds
@@ -144,6 +145,7 @@ uploadParser =
             <*> switch (long "no-compress" <> help "Send the body without gzip compression")
         )
  where
+  passwordParser :: Parser PasswordSource
   passwordParser =
     fmap
       (fromMaybe NoPassword)
@@ -181,6 +183,7 @@ clientParserInfo =
         <> header "pigeon-client"
     )
  where
+  versionOption :: Parser (a -> a)
   versionOption =
     infoOption
       "0.1.0.0"
@@ -264,6 +267,7 @@ validateCommand = \case
     | null (doIds options) -> usage "error: delete requires at least one id"
     | otherwise -> pure (Delete options)
  where
+  usage :: String -> IO a
   usage message = do
     hPutStrLn stderr message
     exitWith (ExitFailure 2)

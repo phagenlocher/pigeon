@@ -52,6 +52,7 @@ startSweeper = do
       Left serverError -> logWarn (aeLogger env) ("sweep error: " <> T.pack (show serverError))
       Right () -> pure ()
  where
+  logSweepFailure :: SomeException -> App ()
   logSweepFailure (err :: SomeException) = do
     logger <- askLogger
     liftIO (logWarn logger ("sweep failed: " <> T.pack (show err)))
@@ -114,6 +115,7 @@ cleanupOrphans now = do
   liftIO $ forM_ removable (deleteBlob (aeStorage env))
   pure (length removable)
  where
+  check :: AppEnv -> Set.Set FileId -> FileId -> IO [FileId]
   check env known fileId
     | Set.member fileId known = pure []
     | otherwise = do
@@ -130,6 +132,7 @@ cleanupTempFiles now = do
   liftIO $ forM_ old removeIfExists
   pure (length old)
  where
+  check :: FilePath -> IO [FilePath]
   check path = do
     stale <- isOlderThan now (24 * 60 * 60) path
     pure [path | stale]

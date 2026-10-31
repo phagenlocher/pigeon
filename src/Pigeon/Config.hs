@@ -82,6 +82,7 @@ validateToken token
   | not (T.all printable token) = Left "token must contain only printable ASCII characters"
   | otherwise = Right token
  where
+  printable :: Char -> Bool
   printable c = isAscii c && c >= '!' && c <= '~'
 
 {- | Validate the mutually exclusive command-line token sources and apply the
@@ -123,6 +124,7 @@ normalizeBaseUrl raw
             Left "server URL must not contain a path"
         | otherwise -> Right (T.pack (showBaseUrl baseUrl))
  where
+  hasScheme :: Text -> Bool
   hasScheme t = "http://" `T.isPrefixOf` t || "https://" `T.isPrefixOf` t
 
 -- | Wrapper around servant-client's parser for a friendlier error.
@@ -153,6 +155,7 @@ parseByteCount raw = case readMaybe (T.unpack raw) of
 durationOption :: Mod OptionFields Text -> Parser Text
 durationOption = option (eitherReader parseReader)
  where
+  parseReader :: String -> Either String Text
   parseReader raw = case parseDuration (T.pack raw) of
     Left err -> Left (T.unpack err)
     Right _ -> Right (T.pack raw)

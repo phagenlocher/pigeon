@@ -104,6 +104,7 @@ encodeFileId :: ByteString -> FileId
 encodeFileId bytes =
   FileId (T.toLower (Base32.encode 16 (BS.foldl' step (0 :: Integer) bytes)))
  where
+  step :: Integer -> Word8 -> Integer
   step acc w = acc * 256 + fromIntegral w
 
 -- | Generate a fresh id from ten cryptographically random bytes.
@@ -267,6 +268,7 @@ sanitizeFilename input =
       truncated = truncateUtf8 255 trimmed
    in if T.null truncated || T.all (== '.') truncated then "file" else truncated
  where
+  replaceChar :: Char -> Char
   replaceChar c
     | c == '/' || c == '\\' || isControl c = '_'
     | otherwise = c
@@ -275,11 +277,13 @@ sanitizeFilename input =
 truncateUtf8 :: Int -> Text -> Text
 truncateUtf8 limit t = T.pack (go 0 (T.unpack t))
  where
+  go :: Int -> String -> String
   go _ [] = []
   go used (c : cs)
     | used + utf8Length c > limit = []
     | otherwise = c : go (used + utf8Length c) cs
 
+  utf8Length :: Char -> Int
   utf8Length c
     | ord c <= 0x7f = 1
     | ord c <= 0x7ff = 2
@@ -294,6 +298,7 @@ sanitizeContentType t
   | not (T.all valid t) = "application/octet-stream"
   | otherwise = t
  where
+  valid :: Char -> Bool
   valid c = isAscii c && not (isControl c) && c /= '\r' && c /= '\n'
 
 -- | Build the value of a @Content-Disposition: attachment@ header.
@@ -310,6 +315,7 @@ contentDisposition filename =
 asciiFallbackFilename :: Text -> Text
 asciiFallbackFilename = T.map replace
  where
+  replace :: Char -> Char
   replace c
     | isAscii c && c /= '"' && c /= '\\' && not (isControl c) = c
     | otherwise = '_'
@@ -318,6 +324,7 @@ asciiFallbackFilename = T.map replace
 percentEncodeRfc5987 :: Text -> Text
 percentEncodeRfc5987 = T.concatMap encodeChar
  where
+  encodeChar :: Char -> Text
   encodeChar c
     | isAttrChar c = T.singleton c
     | otherwise =
@@ -326,6 +333,7 @@ percentEncodeRfc5987 = T.concatMap encodeChar
   encodeByte :: Word8 -> Text
   encodeByte w = T.pack (printf "%%%02X" w)
 
+  isAttrChar :: Char -> Bool
   isAttrChar c =
     isAsciiUpper c
       || isAsciiLower c

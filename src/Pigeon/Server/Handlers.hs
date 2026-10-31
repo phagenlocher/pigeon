@@ -235,6 +235,7 @@ unauthorized =
     { errHeaders = ("WWW-Authenticate", "Bearer realm=\"pigeon\"") : errHeaders base
     }
  where
+  base :: ServerError
   base = apiError err401 "unauthorized" "Missing or invalid bearer token"
 
 storageError :: StorageError -> ServerError

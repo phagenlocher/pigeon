@@ -47,6 +47,7 @@ formatFileInfo now FileInfo{..} =
       "  url:      " <> fiUrl
     ]
  where
+  remaining :: UTCTime -> Text
   remaining expiresAt =
     let seconds = max 0 (floor (diffUTCTime expiresAt now) :: Int64)
      in humanizeRemaining seconds
@@ -57,6 +58,7 @@ formatFileTable _now [] = "No files.\n"
 formatFileTable now files =
   T.unlines (header : map renderRow files)
  where
+  header :: Text
   header =
     padRight 16 "ID"
       <> "  "
@@ -70,6 +72,7 @@ formatFileTable now files =
       <> "  "
       <> "PW"
 
+  renderRow :: FileInfo -> Text
   renderRow FileInfo{..} =
     padRight 16 (showFileId fiId)
       <> "  "
@@ -83,6 +86,7 @@ formatFileTable now files =
       <> "  "
       <> (if fiHasPassword then "yes" else "no")
 
+  remaining :: UTCTime -> Text
   remaining expiresAt =
     let seconds = max 0 (floor (diffUTCTime expiresAt now) :: Int64)
      in humanizeRemaining seconds

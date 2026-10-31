@@ -45,7 +45,8 @@ warnings; @--verbose@ lowers the minimum level to 'Debug'.
 mkLogger :: ServerConfig -> IO Logger
 mkLogger cfg = do
   set <- Log.newStderrLoggerSet Log.defaultBufSize
-  let minLevel
+  let minLevel :: LogLevel
+      minLevel
         | scVerbose cfg = Debug
         | otherwise = Info
   pure Logger{lgSet = set, lgMinLevel = minLevel, lgQuiet = scQuiet cfg}
@@ -60,6 +61,7 @@ logMessage logger level message =
     let line = timestamp <> " " <> T.pack (show level) <> " " <> message <> "\n"
     Log.pushLogStr (lgSet logger) (Log.toLogStr line)
  where
+  whenLevel :: LogLevel -> IO () -> IO ()
   whenLevel lvl action
     | lvl >= lgMinLevel logger = action
     | otherwise = pure ()

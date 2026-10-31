@@ -18,6 +18,7 @@ extra-source-files: test/fixtures/pbkdf2-vector.json
 common warnings
   ghc-options:
     -Wall
+    -Wmissing-local-signatures
 
 common shared
   default-language: GHC2024

@@ -20,7 +20,7 @@ import Data.Maybe (fromMaybe)
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Text.Encoding (encodeUtf8)
-import Data.Time (diffUTCTime, getCurrentTime)
+import Data.Time (UTCTime, diffUTCTime, getCurrentTime)
 import Network.HTTP.Types.Status (statusCode)
 import Pigeon.Client.Api (ApiClient (..), ClientApi (..), mkClientApi, runApi)
 import Pigeon.Client.Config (
@@ -46,6 +46,7 @@ import Pigeon.Types (
   secretText,
  )
 import Servant.Client (ClientError (..), responseBody, responseStatusCode)
+import Servant.Client.Core.Response (Response)
 import System.Directory (doesFileExist, getFileSize)
 import System.Exit (ExitCode (..))
 import System.FilePath (takeFileName)
@@ -149,7 +150,8 @@ performUpload cfg clientApi options filename contentType compression passwordHea
       <> " compression="
       <> maybe "identity" (const "gzip") compression
   started <- getCurrentTime
-  let body =
+  let body :: ConduitT () BS.ByteString (ResourceT IO) ()
+      body =
         sourceHandleChunked uploadChunkSize handle
           .| countBytes counter
           .| progressConduit showProgress filename totalSize counter
@@ -324,6 +326,7 @@ deleteExitCode failed =
     [code] -> code
     _ -> 1
  where
+  unique :: (Eq a) => [a] -> [a]
   unique = foldr (\x acc -> if x `elem` acc then acc else x : acc) []
 
 -- * Errors and output
@@ -353,18 +356,22 @@ mapClientError = \case
   UnsupportedContentType _ _ -> Failure 1 "unexpected_response" "the server returned an unsupported content type"
   InvalidContentTypeHeader _ -> Failure 1 "unexpected_response" "the server returned an invalid content type"
  where
+  decodeApiError :: Response -> Maybe ApiError
   decodeApiError response =
     either (const Nothing) Just (eitherDecode (responseBody response))
+  exitForStatus :: Int -> Int
   exitForStatus status
     | status == 401 || status == 403 = 3
     | status == 404 = 4
     | status >= 500 = 6
     | otherwise = 1
+  defaultCode :: Int -> Text
   defaultCode status
     | status == 401 || status == 403 = "unauthorized"
     | status == 404 = "not_found"
     | status >= 500 = "internal_error"
     | otherwise = "invalid_request"
+  defaultMessage :: Int -> Text
   defaultMessage status
     | status == 401 || status == 403 = "authentication failed"
     | status == 404 = "file not found"
@@ -403,6 +410,7 @@ progressConduit enabled filename total counter
   | not enabled = awaitForever yield
   | otherwise = go Nothing
  where
+  go :: Maybe UTCTime -> ConduitT BS.ByteString BS.ByteString (ResourceT IO) ()
   go lastPrint =
     await >>= \case
       Nothing -> pure ()
@@ -424,6 +432,7 @@ printProgress filename total current = do
       percentage
         | total <= 0 = 100
         | otherwise = min 100 (fromIntegral ((current * 100) `div` total))
+      detail :: Text
       detail
         | total <= 0 = formatSize current
         | otherwise =

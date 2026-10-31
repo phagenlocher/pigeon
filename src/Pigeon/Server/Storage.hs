@@ -271,7 +271,8 @@ doStore storage db StoreRequest{..} createdAt = do
         DirSyncSucceeded -> pure ()
         DirSyncUnsupported -> warnUnsupportedDirSync storage
 
-      let stored =
+      let stored :: StoredFile
+          stored =
             StoredFile
               { sfId = fileId,
                 sfFilename = srFilename,
@@ -292,8 +293,10 @@ doStore storage db StoreRequest{..} createdAt = do
       logUploadIoFailure storage fileId err
       throwIO err
  where
+  contentEncoding :: Maybe ByteString
   contentEncoding = fmap (B8.map lowerAscii) srContentEncoding
 
+  lowerAscii :: Char -> Char
   lowerAscii c
     | isAsciiUpper c = toEnum (fromEnum c + 32)
     | otherwise = c
@@ -333,6 +336,7 @@ removeOrphanBlob storage fileId =
   ignoreHookErrors
     (shRemoveBlob (stHooks storage) (blobPath storage fileId) `catch` handleFailure)
  where
+  handleFailure :: IOException -> IO ()
   handleFailure err
     | isDoesNotExistError err = pure ()
     | otherwise =
@@ -381,6 +385,7 @@ writeGzipBody body temp limit storedRef originalRef =
 pickFreshId :: Db -> IO FileId
 pickFreshId db = go (5 :: Int)
  where
+  go :: Int -> IO FileId
   go 0 = throwIO (userError "could not allocate a unique file id")
   go attempts = do
     candidate <- generateFileId

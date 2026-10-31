@@ -14,6 +14,7 @@ import Data.ByteString (ByteString)
 import Data.ByteString qualified as BS
 import Data.ByteString.Builder qualified as Builder
 import Data.ByteString.Char8 qualified as B8
+import Data.ByteString.Lazy qualified as LBS
 import Data.Conduit
 import Data.Conduit.Combinators (sourceHandle)
 import Data.Conduit.Combinators qualified as CC
@@ -223,7 +224,8 @@ htmlErrorWithHeaders status extra message =
 
 formResponse :: Status -> StoredFile -> Bool -> Bool -> Response
 formResponse status stored showError isHead =
-  let bodyBytes =
+  let bodyBytes :: LBS.ByteString
+      bodyBytes =
         renderHtml
           ( htmlPage
               (Just (sanitizeFilename (sfFilename stored)))
@@ -312,7 +314,9 @@ styleSheet =
 readFormBody :: Request -> IO (Either () ByteString)
 readFormBody request = go 0 []
  where
+  limit :: Int
   limit = 8192
+  go :: Int -> [ByteString] -> IO (Either () ByteString)
   go total chunks = do
     chunk <- getRequestBodyChunk request
     if BS.null chunk
