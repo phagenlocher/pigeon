@@ -1,0 +1,51 @@
+# Fourmolu configuration for Pigeon.
+#
+# The project uses 2-space indentation, a 100-column limit and trailing commas.
+# The sorting knobs keep constraints and deriving clauses deterministic.
+#
+# Every option is listed explicitly so style changes are reviewable rather
+# than inherited from a fourmolu upgrade.
+
+# Number of spaces per indentation step
+indentation: 2
+
+# Max line length for automatic line breaking
+column-limit: 100
+
+# How to place commas in multi-line lists, records, etc.
+comma-style: trailing
+
+# Modules defined by the current Cabal package for import grouping
+local-modules:
+  - Pigeon.API
+  - Pigeon.Client
+  - Pigeon.Client.Api
+  - Pigeon.Client.Commands
+  - Pigeon.Client.Config
+  - Pigeon.Client.Output
+  - Pigeon.Config
+  - Pigeon.Duration
+  - Pigeon.Password
+  - Pigeon.Server
+  - Pigeon.Server.App
+  - Pigeon.Server.Auth
+  - Pigeon.Server.Config
+  - Pigeon.Server.Db
+  - Pigeon.Server.Env
+  - Pigeon.Server.Handlers
+  - Pigeon.Server.Log
+  - Pigeon.Server.PathSafety
+  - Pigeon.Server.Storage
+  - Pigeon.Server.Sweeper
+  - Pigeon.Server.Web
+  - Pigeon.Streaming
+  - Pigeon.Types
+
+# Whether to sort constraints
+sort-constraints: true
+
+# Whether to sort derived classes
+sort-derived-classes: true
+
+# Whether to sort deriving clauses
+sort-deriving-clauses: true

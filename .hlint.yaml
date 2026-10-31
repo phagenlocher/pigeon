@@ -1,0 +1,3 @@
+# Exception handling uses Control.Exception.Safe (ARCH-013, SRV-068, TEST-286).
+- modules:
+  - {name: [Control.Exception, Control.Exception.Base], within: [], message: "Use Control.Exception.Safe instead"}

@@ -1,0 +1,24 @@
+packages: .
+
+-- Build everything, including Hackage dependencies, at -O2. The `package *`
+-- stanza is required: a top-level `optimization:` field only applies to local
+-- packages. Command-line -O flags still apply to local packages, so
+-- `cabal build --disable-optimization` gives a -O0 build of pigeon itself
+-- while reusing the cached -O2 dependencies.
+--
+-- Optimization lives here rather than in pigeon.cabal's ghc-options so that
+-- those command-line flags actually take effect: cabal emits its own -O flag
+-- first and ghc-options come last, so a hard-coded -O2 always won.
+package *
+  optimization: 2
+
+-- `password` 3.1.1.0 requires crypton >=1.1 && <1.2. Pin the TLS stack to the
+-- last versions that share that crypton generation.
+constraints: tls ==2.3.0, tls-session-manager <0.1.2
+allow-newer: serialise:base, cborg:base
+
+-- Compile only the PBKDF2 algorithm from the `password` package.
+package password
+  flags: +pbkdf2 -bcrypt -argon2 -scrypt -cryptonite
+
+tests: True
