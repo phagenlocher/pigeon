@@ -27,9 +27,9 @@ module Pigeon.Types (
   parseTimestamp,
   epochToUtc,
   utcToEpoch,
-  nowUtc,
 
   -- * Sanitisation and headers
+  lowerAsciiChar,
   sanitizeFilename,
   sanitizeContentType,
   contentDisposition,
@@ -54,7 +54,6 @@ import Data.Time (
   UTCTime,
   defaultTimeLocale,
   formatTime,
-  getCurrentTime,
   parseTimeM,
  )
 import Data.Time.Clock.POSIX (posixSecondsToUTCTime, utcTimeToPOSIXSeconds)
@@ -250,8 +249,15 @@ epochToUtc = posixSecondsToUTCTime . fromIntegral
 utcToEpoch :: UTCTime -> Int64
 utcToEpoch = floor . utcTimeToPOSIXSeconds
 
-nowUtc :: IO UTCTime
-nowUtc = getCurrentTime
+{- | Lowercase a single ASCII letter; other characters are unchanged.
+
+Used for case-insensitive HTTP header values such as @Content-Encoding@ and
+@Accept-Encoding@.
+-}
+lowerAsciiChar :: Char -> Char
+lowerAsciiChar c
+  | isAsciiUpper c = toEnum (fromEnum c + 32)
+  | otherwise = c
 
 {- | Make a user-supplied display filename safe.
 

@@ -3,12 +3,12 @@ module Pigeon.Streaming (
   sourceHandleChunked,
   gzipConduit,
   ungzipConduit,
+  passThrough,
   countBytes,
   countBytesLimited,
   UploadTooLarge (..),
   AcceptEncoding (..),
   parseAcceptEncoding,
-  acceptsGzip,
 )
 where
 
@@ -20,13 +20,14 @@ import Control.Monad.Trans.Resource (ResourceT)
 import Data.ByteString (ByteString)
 import Data.ByteString qualified as BS
 import Data.ByteString.Char8 qualified as B8
-import Data.Char (isAsciiUpper)
 import Data.Conduit
 import Data.Conduit.Zlib (gzip, ungzip)
 import Data.IORef
 import Data.Int (Int64)
 import Data.Maybe (fromMaybe, mapMaybe)
 import System.IO (Handle)
+
+import Pigeon.Types (lowerAsciiChar)
 
 -- | Gzip compression conduit (level 6, the zlib default).
 gzipConduit :: (MonadThrow m, PrimMonad m) => ConduitT ByteString ByteString m ()
@@ -35,6 +36,10 @@ gzipConduit = gzip
 -- | Streaming gzip decompression.
 ungzipConduit :: (MonadThrow m, PrimMonad m) => ConduitT ByteString ByteString m ()
 ungzipConduit = ungzip
+
+-- | Pass bytes through unchanged.
+passThrough :: (Monad m) => ConduitT ByteString ByteString m ()
+passThrough = awaitForever yield
 
 {- | Stream a handle in chunks of up to @size@ bytes.
 
@@ -110,18 +115,13 @@ parseAcceptEncoding raw
 
   parseEntry :: ByteString -> Maybe (ByteString, Double)
   parseEntry part =
-    case B8.split ';' (B8.map lower part) of
+    case B8.split ';' (B8.map lowerAsciiChar part) of
       [] -> Nothing
       (name : params) ->
         let trimmedName = B8.strip name
          in if B8.null trimmedName
               then Nothing
               else (,) trimmedName <$> parseQ params
-
-  lower :: Char -> Char
-  lower c
-    | isAsciiUpper c = toEnum (fromEnum c + 32)
-    | otherwise = c
 
   parseQ :: [ByteString] -> Maybe Double
   parseQ params =
@@ -132,7 +132,3 @@ parseAcceptEncoding raw
          in case reads value :: [(Double, String)] of
               [(q, "")] | q >= 0 && q <= 1 -> Just q
               _ -> Nothing
-
--- | Convenience predicate for the download path.
-acceptsGzip :: ByteString -> Bool
-acceptsGzip raw = parseAcceptEncoding raw == AcceptGzip

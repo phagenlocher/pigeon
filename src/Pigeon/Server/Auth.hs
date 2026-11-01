@@ -1,7 +1,6 @@
 -- | Bearer-token parsing and constant-time comparison.
 module Pigeon.Server.Auth (
   checkBearer,
-  extractBearer,
   AuthFailure (..),
 ) where
 

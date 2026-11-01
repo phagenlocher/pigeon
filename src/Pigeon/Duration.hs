@@ -2,7 +2,6 @@
 module Pigeon.Duration (
   parseDuration,
   formatDuration,
-  durationSeconds,
   humanizeRemaining,
 ) where
 
@@ -80,10 +79,6 @@ formatDuration seconds
   component :: Char -> Int64 -> [Text]
   component _ 0 = []
   component unit n = [T.pack (show n) <> T.singleton unit]
-
--- | Total seconds in a duration, as an 'Int64'.
-durationSeconds :: Text -> Either Text Int64
-durationSeconds = parseDuration
 
 {- | Humanize a remaining duration for CLI output.
 

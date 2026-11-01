@@ -244,4 +244,3 @@ storageError = \case
   StorageBadGzip -> invalidRequest "request body is not valid gzip"
   StorageIdCollision -> apiError err503 "unavailable" "could not allocate a file id"
   StorageIo _ -> apiError err500 "internal_error" "internal storage failure"
-  StorageCorrupt _ -> apiError err500 "internal_error" "internal storage failure"

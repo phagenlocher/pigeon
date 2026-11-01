@@ -247,20 +247,12 @@ download port fileId headers =
   requestWith port ("/f/" <> T.unpack (unFileId fileId)) "GET" headers BS.empty
 
 postForm :: Warp.Port -> FileId -> ByteString -> IO (Response LBS.ByteString)
-postForm port fileId body = do
-  manager <- newManager defaultManagerSettings
-  request <-
-    parseRequest
-      ("http://127.0.0.1:" <> show port <> "/f/" <> T.unpack (unFileId fileId))
-  let request' :: Request
-      request' =
-        request
-          { method = "POST",
-            requestHeaders = [("Content-Type", "application/x-www-form-urlencoded")],
-            requestBody = RequestBodyBS body,
-            redirectCount = 0
-          }
-  httpLbs request' manager
+postForm port fileId =
+  requestWith
+    port
+    ("/f/" <> T.unpack (unFileId fileId))
+    "POST"
+    [("Content-Type", "application/x-www-form-urlencoded")]
 
 requestWith ::
   Warp.Port -> String -> Method -> [Header] -> ByteString -> IO (Response LBS.ByteString)

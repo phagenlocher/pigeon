@@ -184,30 +184,12 @@ parseServerConfig = do
 
   token <- requireToken =<< tokenFromSources (roToken raw) (roTokenFile raw) envToken
 
-  port <- case parsePositiveInt portText of
-    Right n | n <= 65535 -> pure n
-    _ -> exitWithText 1 "error: --port must be an integer between 1 and 65535"
-
-  defaultExpiry <- case parseDuration defaultExpiryText of
-    Right n -> pure n
-    Left err -> exitWithText 1 ("error: --default-expiry: " <> err)
-
-  maxExpiry <- case parseDuration maxExpiryText of
-    Right n -> pure n
-    Left err -> exitWithText 1 ("error: --max-expiry: " <> err)
-
-  sweepInterval <- case parseDuration sweepText of
-    Right n | n >= 1 -> pure n
-    Right _ -> exitWithText 1 "error: --sweep-interval must be at least 1s"
-    Left err -> exitWithText 1 ("error: --sweep-interval: " <> err)
-
-  maxUploadSize <- case parseByteCount maxUploadText of
-    Right n -> pure n
-    Left err -> exitWithText 1 ("error: --max-upload-size: " <> err)
-
-  iterations <- case parsePositiveInt iterationsText of
-    Right n | n >= 100000 && n <= 10000000 -> pure n
-    _ -> exitWithText 1 "error: --password-hash-iterations must be between 100000 and 10000000"
+  port <- parseOrExit "port" (parsePositiveInt portText)
+  defaultExpiry <- parseOrExit "default-expiry" (parseDuration defaultExpiryText)
+  maxExpiry <- parseOrExit "max-expiry" (parseDuration maxExpiryText)
+  sweepInterval <- parseOrExit "sweep-interval" (parseDuration sweepText)
+  maxUploadSize <- parseOrExit "max-upload-size" (parseByteCount maxUploadText)
+  iterations <- parseOrExit "password-hash-iterations" (parsePositiveInt iterationsText)
 
   when (roNoTls raw && (isJust cert || isJust key)) $ do
     exitWithText 2 "error: --no-tls cannot be combined with --tls-cert or --tls-key"
@@ -269,6 +251,11 @@ parseServerConfig = do
  where
   isLoopback :: String -> Bool
   isLoopback h = h `elem` ["127.0.0.1", "localhost", "::1", "0:0:0:0:0:0:0:1"]
+
+-- | Parse a command-line value or exit with a @1@ status naming the option.
+parseOrExit :: Text -> Either Text a -> IO a
+parseOrExit label =
+  either (\err -> exitWithText 1 ("error: --" <> label <> ": " <> err)) pure
 
 -- | Final cross-field validation shared by the parser and tests.
 validateServerConfig :: ServerConfig -> IO ServerConfig

@@ -2,11 +2,8 @@
 module Pigeon.Config (
   runParser,
   lookupEnvText,
-  readTokenFile,
-  validateToken,
   normalizeBaseUrl,
   parseBaseUrlText,
-  baseUrlSchemeText,
   requireToken,
   tokenFromSources,
   exitWithText,
@@ -14,7 +11,6 @@ module Pigeon.Config (
   -- * CLI helpers
   parsePositiveInt,
   parseByteCount,
-  durationOption,
 ) where
 
 import Control.Exception.Safe (IOException, try)
@@ -27,7 +23,6 @@ import Data.Text.Read qualified as TR
 import Options.Applicative
 import Servant.Client.Core (
   BaseUrl (..),
-  Scheme (..),
   parseBaseUrl,
   showBaseUrl,
  )
@@ -35,7 +30,6 @@ import System.Environment (getArgs, lookupEnv)
 import System.Exit (ExitCode (..), exitSuccess, exitWith)
 import System.IO (hPutStrLn, stderr)
 
-import Pigeon.Duration (parseDuration)
 import Pigeon.Types (Secret, mkSecret)
 
 {- | Run an optparse parser, exiting with code @2@ on a usage error and @0@ for
@@ -108,10 +102,7 @@ tokenFromSources flagToken tokenFile envToken =
 
 -- | Fail with a usage-style message when no token is available.
 requireToken :: Either Text Secret -> IO Secret
-requireToken (Right secret) = pure secret
-requireToken (Left message) = do
-  TIO.hPutStrLn stderr ("error: " <> message)
-  exitWith (ExitFailure 2)
+requireToken = either (exitWithText 2 . ("error: " <>)) pure
 
 -- | Write an error line to stderr and exit with the given status code.
 exitWithText :: Int -> Text -> IO a
@@ -143,11 +134,6 @@ parseBaseUrlText raw =
     Nothing -> Left "invalid server URL"
     Just baseUrl -> Right baseUrl
 
-baseUrlSchemeText :: BaseUrl -> Text
-baseUrlSchemeText baseUrl = case baseUrlScheme baseUrl of
-  Http -> "http"
-  Https -> "https"
-
 -- | Parse a strictly positive integer.
 parsePositiveInt :: Text -> Either Text Int
 parsePositiveInt raw = case parseDecimal raw of
@@ -168,12 +154,3 @@ parseDecimal raw =
   case TR.decimal (T.strip raw) of
     Right (n, rest) | T.null rest -> Just n
     _ -> Nothing
-
--- | An option whose value is parsed with 'parseDuration'.
-durationOption :: Mod OptionFields Text -> Parser Text
-durationOption = option (eitherReader parseReader)
- where
-  parseReader :: String -> Either String Text
-  parseReader raw = case parseDuration (T.pack raw) of
-    Left err -> Left (T.unpack err)
-    Right _ -> Right (T.pack raw)

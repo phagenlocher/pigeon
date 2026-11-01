@@ -16,6 +16,7 @@ import Data.ByteString.Lazy qualified as LBS
 import Data.Conduit
 import Data.IORef
 import Data.Int (Int64)
+import Data.List (nub)
 import Data.Maybe (fromMaybe)
 import Data.Text (Text, dropWhileEnd)
 import Data.Text qualified as T
@@ -57,7 +58,7 @@ import Pigeon.Client.Output (
   formatSize,
  )
 import Pigeon.Password (validatePassword)
-import Pigeon.Streaming (countBytes, gzipConduit, sourceHandleChunked)
+import Pigeon.Streaming (countBytes, gzipConduit, passThrough, sourceHandleChunked)
 import Pigeon.Types (
   ApiError (..),
   ApiErrorEnvelope (..),
@@ -323,12 +324,9 @@ confirmDelete cfg assumeYes count
 deleteExitCode :: [(Text, Failure)] -> Int
 deleteExitCode [] = 0
 deleteExitCode failed =
-  case unique (map (failureExit . snd) failed) of
+  case nub (map (failureExit . snd) failed) of
     [code] -> code
     _ -> 1
- where
-  unique :: (Eq a) => [a] -> [a]
-  unique = foldr (\x acc -> if x `elem` acc then acc else x : acc) []
 
 -- * Errors and output
 
@@ -348,9 +346,10 @@ mapClientError = \case
   FailureResponse _ response ->
     let status = statusCode (responseStatusCode response)
         apiError = decodeApiError response
-        message = maybe (defaultMessage status) aeMessage apiError
-        code = maybe (defaultCode status) aeCode apiError
-     in Failure (exitForStatus status) code message
+        (exitCode, defaultCode, defaultMessage) = statusDefaults status
+        message = maybe defaultMessage aeMessage apiError
+        code = maybe defaultCode aeCode apiError
+     in Failure exitCode code message
   ConnectionError _ ->
     Failure 5 "network_error" "network request failed"
   DecodeFailure _ _ -> Failure 1 "unexpected_response" "the server returned an unexpected response"
@@ -360,24 +359,12 @@ mapClientError = \case
   decodeApiError :: Response -> Maybe ApiError
   decodeApiError response =
     either (const Nothing) Just (eitherDecode (responseBody response))
-  exitForStatus :: Int -> Int
-  exitForStatus status
-    | status == 401 || status == 403 = 3
-    | status == 404 = 4
-    | status >= 500 = 6
-    | otherwise = 1
-  defaultCode :: Int -> Text
-  defaultCode status
-    | status == 401 || status == 403 = "unauthorized"
-    | status == 404 = "not_found"
-    | status >= 500 = "internal_error"
-    | otherwise = "invalid_request"
-  defaultMessage :: Int -> Text
-  defaultMessage status
-    | status == 401 || status == 403 = "authentication failed"
-    | status == 404 = "file not found"
-    | status >= 500 = "server error"
-    | otherwise = "request failed"
+  statusDefaults :: Int -> (Int, Text, Text)
+  statusDefaults status
+    | status == 401 || status == 403 = (3, "unauthorized", "authentication failed")
+    | status == 404 = (4, "not_found", "file not found")
+    | status >= 500 = (6, "internal_error", "server error")
+    | otherwise = (1, "invalid_request", "request failed")
 
 -- * Progress
 
@@ -393,9 +380,6 @@ the password, or file contents.
 logVerbose :: ClientConfig -> Text -> IO ()
 logVerbose cfg message =
   when (ccVerbose cfg) $ TIO.hPutStrLn stderr ("verbose: " <> message)
-
-passThrough :: ConduitT BS.ByteString BS.ByteString (ResourceT IO) ()
-passThrough = awaitForever yield
 
 -- | Minimum interval between progress redraws, in milliseconds (CLI-083).
 progressIntervalMs :: Double

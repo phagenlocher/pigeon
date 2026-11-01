@@ -42,15 +42,10 @@ formatFileInfo now FileInfo{..} =
   T.unlines
     [ "Uploaded " <> fiFilename <> " (" <> formatSize fiSize <> ")",
       "  id:       " <> showFileId fiId,
-      "  expires:  " <> formatUtc fiExpiresAt <> " (" <> remaining fiExpiresAt <> ")",
+      "  expires:  " <> formatUtc fiExpiresAt <> " (" <> remainingUntil now fiExpiresAt <> ")",
       "  password: " <> (if fiHasPassword then "yes" else "no"),
       "  url:      " <> fiUrl
     ]
- where
-  remaining :: UTCTime -> Text
-  remaining expiresAt =
-    let seconds = max 0 (floor (diffUTCTime expiresAt now) :: Int64)
-     in humanizeRemaining seconds
 
 -- | Human-readable list table. Preserves the input order.
 formatFileTable :: UTCTime -> [FileInfo] -> Text
@@ -82,14 +77,15 @@ formatFileTable now files =
       <> "  "
       <> padRight 19 (T.pack (Time.formatTime Time.defaultTimeLocale "%Y-%m-%d %H:%M:%S" fiExpiresAt))
       <> "  "
-      <> padRight 8 (remaining fiExpiresAt)
+      <> padRight 8 (remainingUntil now fiExpiresAt)
       <> "  "
       <> (if fiHasPassword then "yes" else "no")
 
-  remaining :: UTCTime -> Text
-  remaining expiresAt =
-    let seconds = max 0 (floor (diffUTCTime expiresAt now) :: Int64)
-     in humanizeRemaining seconds
+-- | Remaining time until @expiresAt@, clamped at zero and humanized.
+remainingUntil :: UTCTime -> UTCTime -> Text
+remainingUntil now expiresAt =
+  let seconds = max 0 (floor (diffUTCTime expiresAt now) :: Int64)
+   in humanizeRemaining seconds
 
 padRight :: Int -> Text -> Text
 padRight width value = value <> T.replicate (max 0 (width - T.length value)) " "

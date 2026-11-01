@@ -314,7 +314,7 @@ main = hspec $ do
                 srBody = yieldBody "not gzip"
               }
       result <- storeUpload storage db request
-      result `shouldSatisfy` isLeft
+      result `shouldBe` Left StorageBadGzip
       listLiveFiles db now `shouldReturn` []
       listBlobIds storage `shouldReturn` []
       listTempFiles storage `shouldReturn` []
@@ -443,6 +443,21 @@ main = hspec $ do
         recorded <- readIORef warnings
         recorded `shouldSatisfy` any (T.isInfixOf "orphan")
         closeDb db
+
+  describe "database" $ do
+    it "returns only the ids that were actually deleted" $ withTempDataDir $ \dir -> do
+      storage <- initStorage defaultStorageHooks dir
+      db <- openDb (dir </> "pigeon.db")
+      migrate db
+      now <- getCurrentTime
+      stored <-
+        storeUpload storage db (storeRequest now Nothing "payload")
+          >>= either (fail . show) pure
+      let fileId = sfId stored
+      deleted <- deleteFileRows db [fileId, FileId "0000000000000000"]
+      deleted `shouldBe` [fileId]
+      allFiles db `shouldReturn` []
+      closeDb db
 
   describe "path safety" $ do
     it "creates private storage directories" $ withTempDataDir $ \dir -> do

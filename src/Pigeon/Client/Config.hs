@@ -17,10 +17,10 @@ import Data.Text qualified as T
 import Data.Text.IO qualified as TIO
 import Options.Applicative
 import Servant.Client.Core (BaseUrl (..), Scheme (..))
-import System.Exit (ExitCode (..), exitWith)
 import System.IO (stderr)
 
 import Pigeon.Config (
+  exitWithText,
   lookupEnvText,
   normalizeBaseUrl,
   parseBaseUrlText,
@@ -203,19 +203,14 @@ parseClientConfig = do
   envServer <- lookupEnvText "PIGEON_SERVER"
   envToken <- lookupEnvText "PIGEON_TOKEN"
 
-  when (rgQuiet && rgVerbose) $ do
-    TIO.hPutStrLn stderr "error: --quiet and --verbose are mutually exclusive"
-    exitWith (ExitFailure 2)
+  when (rgQuiet && rgVerbose) $
+    exitWithText 2 "error: --quiet and --verbose are mutually exclusive"
 
   let serverText = fromMaybe "http://127.0.0.1:8080" (rgServer <|> envServer)
   serverBase <- case normalizeBaseUrl serverText of
-    Left message -> do
-      TIO.hPutStrLn stderr ("error: --server: " <> message)
-      exitWith (ExitFailure 2)
+    Left message -> exitWithText 2 ("error: --server: " <> message)
     Right normalized -> case parseBaseUrlText normalized of
-      Left message -> do
-        TIO.hPutStrLn stderr ("error: --server: " <> message)
-        exitWith (ExitFailure 2)
+      Left message -> exitWithText 2 ("error: --server: " <> message)
       Right base -> pure (base, normalized)
 
   token <- requireToken =<< tokenFromSources rgToken rgTokenFile envToken
@@ -223,9 +218,7 @@ parseClientConfig = do
   timeout <- case rgTimeout of
     Nothing -> pure 3600
     Just seconds | seconds >= 1 -> pure seconds
-    Just _ -> do
-      TIO.hPutStrLn stderr "error: --timeout must be at least 1s"
-      exitWith (ExitFailure 2)
+    Just _ -> exitWithText 2 "error: --timeout must be at least 1s"
 
   validatedCommand <- validateCommand clientCommand
 
@@ -271,9 +264,7 @@ validateCommand = \case
     | otherwise -> pure (Delete options)
  where
   usage :: Text -> IO a
-  usage message = do
-    TIO.hPutStrLn stderr message
-    exitWith (ExitFailure 2)
+  usage = exitWithText 2
 
 validContentType :: Text -> Bool
 validContentType rawType =

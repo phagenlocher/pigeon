@@ -25,7 +25,7 @@ module Pigeon.Server.Db (
 
 import Control.Concurrent.MVar
 import Control.Exception.Safe (SomeException, bracket, mask, onException, throwIO, try)
-import Control.Monad (forM_, void)
+import Control.Monad (forM, void)
 import Data.Int (Int64)
 import Data.Maybe (catMaybes)
 import Data.Set (Set)
@@ -195,9 +195,12 @@ deleteFileRows :: Db -> [FileId] -> IO [FileId]
 deleteFileRows _ [] = pure []
 deleteFileRows db ids = withConn db $ \connection ->
   withImmediate connection $ do
-    forM_ ids $ \fid ->
-      execute connection "DELETE FROM files WHERE id = ?" (Only (unFileId fid))
-    pure ids
+    deleted <-
+      forM ids $ \fid -> do
+        execute connection "DELETE FROM files WHERE id = ?" (Only (unFileId fid))
+        changed <- changes connection
+        pure (if changed > 0 then Just fid else Nothing)
+    pure (catMaybes deleted)
 
 expiredIds :: Db -> UTCTime -> IO [FileId]
 expiredIds db now = withConn db $ \connection -> do

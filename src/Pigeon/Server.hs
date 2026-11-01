@@ -18,7 +18,6 @@ import Data.Text qualified as T
 import Data.Text.Encoding (decodeUtf8With)
 import Data.Text.Encoding.Error (lenientDecode)
 import Data.Text.IO qualified as TIO
-import Data.Time (getCurrentTime)
 import Network.HTTP.Types (ResponseHeaders, hCacheControl)
 import Network.Wai (
   Application,
@@ -80,14 +79,12 @@ mkAppEnv cfg = do
       (scDataDir cfg)
   db <- openDb (scDbPath cfg)
   migrate db
-  start <- getCurrentTime
   pure
     AppEnv
       { aeConfig = cfg,
         aeDb = db,
         aeStorage = storage,
-        aeLogger = logger,
-        aeStart = start
+        aeLogger = logger
       }
 
 closeAppEnv :: AppEnv -> IO ()
