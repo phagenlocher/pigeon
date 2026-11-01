@@ -49,6 +49,13 @@ import Test.Hspec
 import Test.QuickCheck hiding ((.&.))
 
 import Pigeon.API (UploadBody)
+import Pigeon.Client.Commands (desiredCapabilities)
+import Pigeon.Client.Config (
+  ClientCommand (..),
+  DeleteOptions (..),
+  PasswordSource (..),
+  UploadOptions (..),
+ )
 import Pigeon.Duration
 import Pigeon.Password
 import Pigeon.Server.Config (ServerConfig (..))
@@ -57,6 +64,18 @@ import Pigeon.Server.Storage
 import Pigeon.Streaming
 import Pigeon.Types
 import Support
+
+-- | Minimal upload options for capability-policy tests.
+uploadOptions :: Bool -> UploadOptions
+uploadOptions noCompress =
+  UploadOptions
+    { uoFile = "test.bin",
+      uoExpiresIn = Nothing,
+      uoName = Nothing,
+      uoContentType = Nothing,
+      uoPassword = NoPassword,
+      uoNoCompress = noCompress
+    }
 
 main :: IO ()
 main = hspec $ do
@@ -192,6 +211,15 @@ main = hspec $ do
       parseAcceptEncoding "br, gzip" `shouldBe` AcceptGzip
       parseAcceptEncoding "br" `shouldBe` AcceptIdentity
       parseAcceptEncoding "gzip;q=oops" `shouldBe` AcceptIdentity
+
+  describe "client capabilities" $ do
+    it "keeps the gzip worker cap for compressed uploads" $
+      desiredCapabilities (Upload (uploadOptions False)) `shouldBe` maxGzipWorkers
+    it "uses two capabilities for identity uploads" $
+      desiredCapabilities (Upload (uploadOptions True)) `shouldBe` 2
+    it "uses two capabilities for list and delete" $ do
+      desiredCapabilities List `shouldBe` 2
+      desiredCapabilities (Delete (DeleteOptions [] True)) `shouldBe` 2
 
   describe "chunked file source" $ do
     it "reads a handle in the requested chunk size and preserves bytes" $ withTempDataDir $ \dir -> do

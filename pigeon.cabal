@@ -136,12 +136,14 @@ executable pigeon-client
     base,
     pigeon,
 
-  -- Same runtime defaults as the server so uploads can use parallel GC.
-  -- Override with +RTS -N1 in constrained environments.
+  -- Eight capabilities for block-parallel gzip, with a 4 MiB allocation area.
+  -- -A4m is large enough to feed eight 1 MiB workers without GC thrash.
+  -- runClient lowers this at runtime for commands that do not compress.
+  -- Override with +RTS -Nn in constrained environments.
   ghc-options:
     -threaded
     -rtsopts
-    "-with-rtsopts=-N -A16m"
+    "-with-rtsopts=-N8 -A4m"
 
 test-suite pigeon-test
   import: warnings, shared

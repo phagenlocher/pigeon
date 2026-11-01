@@ -1,6 +1,7 @@
 -- | Upload, list, and delete command implementations.
 module Pigeon.Client.Commands (
   runClient,
+  desiredCapabilities,
 )
 where
 
@@ -23,6 +24,7 @@ import Data.Text qualified as T
 import Data.Text.Encoding (encodeUtf8)
 import Data.Text.IO qualified as TIO
 import Data.Time (UTCTime, diffUTCTime, getCurrentTime)
+import GHC.Conc (getNumCapabilities, getNumProcessors, setNumCapabilities)
 import Network.HTTP.Types.Status (statusCode)
 import Servant.Client (ClientError (..), responseBody, responseStatusCode)
 import Servant.Client.Core.Response (Response)
@@ -58,7 +60,13 @@ import Pigeon.Client.Output (
   formatSize,
  )
 import Pigeon.Password (validatePassword)
-import Pigeon.Streaming (countBytes, parallelGzipConduit, passThrough, sourceHandleChunked)
+import Pigeon.Streaming (
+  countBytes,
+  maxGzipWorkers,
+  parallelGzipConduit,
+  passThrough,
+  sourceHandleChunked,
+ )
 import Pigeon.Types (
   ApiError (..),
   ApiErrorEnvelope (..),
@@ -78,12 +86,41 @@ data Failure = Failure
 -- | Run one client command, returning its process exit code.
 runClient :: ClientConfig -> IO ExitCode
 runClient cfg = do
+  configureCapabilities (ccCommand cfg)
   clientApi <- mkClientApi cfg
   code <- case ccCommand cfg of
     Upload options -> runUpload cfg clientApi options
     List -> runList cfg clientApi
     Delete options -> runDelete cfg clientApi options
   pure (if code == 0 then ExitSuccess else ExitFailure code)
+
+{- | Match the capability count to the work in this run.
+
+Compressed uploads use one block-parallel gzip worker per capability, so they
+keep the compiled default of up to eight. Identity uploads and the metadata
+commands are single streams: two capabilities let the I/O manager run alongside
+the main thread without reserving eight nurseries. The target is capped by the
+processor count and never raises the capability count, so an explicit @+RTS -Nn@
+still wins.
+-}
+configureCapabilities :: ClientCommand -> IO ()
+configureCapabilities command = do
+  current <- getNumCapabilities
+  processors <- getNumProcessors
+  let target :: Int
+      target = max 1 (min (desiredCapabilities command) processors)
+  when (target < current) (setNumCapabilities target)
+
+-- | Capabilities wanted for a command before the processor cap is applied.
+desiredCapabilities :: ClientCommand -> Int
+desiredCapabilities command = case command of
+  Upload options
+    | not (uoNoCompress options) -> maxGzipWorkers
+  _ -> streamingCapabilities
+
+-- | Capabilities for a command that does not compress its upload.
+streamingCapabilities :: Int
+streamingCapabilities = 2
 
 -- * Upload
 
