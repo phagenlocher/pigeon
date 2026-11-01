@@ -8,19 +8,21 @@ module Pigeon.Server (
 
 import Control.Concurrent.Async (cancel, waitCatch)
 import Control.Concurrent.MVar (modifyMVar, newMVar)
-import Control.Exception.Safe (bracket, catch, finally)
+import Control.Exception.Safe (SomeException, bracket, catch, finally)
 import Control.Monad (when)
 import Control.Monad.IO.Class (liftIO)
 import Control.Monad.Reader (ask)
-import Data.ByteString.Char8 qualified as B8
 import Data.Proxy (Proxy (..))
 import Data.Tagged (Tagged (..))
 import Data.Text qualified as T
-import Data.Time (getCurrentTime)
-import Network.HTTP.Types (hCacheControl)
+import Data.Text.Encoding (decodeUtf8With)
+import Data.Text.Encoding.Error (lenientDecode)
+import Data.Text.IO qualified as TIO
+import Network.HTTP.Types (ResponseHeaders, hCacheControl)
 import Network.Wai (
   Application,
   Middleware,
+  Request,
   Response,
   mapResponseHeaders,
   modifyResponse,
@@ -31,7 +33,7 @@ import Network.Wai.Handler.Warp qualified as Warp
 import Network.Wai.Handler.WarpTLS qualified as WarpTLS
 import Servant (ServerT, hoistServer, serve, (:<|>) (..))
 import System.Exit (ExitCode (..), exitWith)
-import System.IO (hPutStrLn, stderr)
+import System.IO (stderr)
 import System.Posix.Process (exitImmediately)
 import System.Posix.Signals (
   Handler (Catch),
@@ -77,14 +79,12 @@ mkAppEnv cfg = do
       (scDataDir cfg)
   db <- openDb (scDbPath cfg)
   migrate db
-  start <- getCurrentTime
   pure
     AppEnv
       { aeConfig = cfg,
         aeDb = db,
         aeStorage = storage,
-        aeLogger = logger,
-        aeStart = start
+        aeLogger = logger
       }
 
 closeAppEnv :: AppEnv -> IO ()
@@ -117,6 +117,7 @@ server env =
 addNoStore :: Response -> Response
 addNoStore = mapResponseHeaders addIfMissing
  where
+  addIfMissing :: ResponseHeaders -> ResponseHeaders
   addIfMissing headers
     | any ((== hCacheControl) . fst) headers = headers
     | otherwise = (hCacheControl, "no-store") : headers
@@ -125,6 +126,7 @@ addNoStore = mapResponseHeaders addIfMissing
 securityHeaders :: ServerConfig -> Middleware
 securityHeaders cfg = modifyResponse addHstsIfHttps
  where
+  addHstsIfHttps :: Response -> Response
   addHstsIfHttps response
     | not ("https://" `T.isPrefixOf` scPublicUrl cfg) = response
     | otherwise =
@@ -141,6 +143,7 @@ runServer :: ServerConfig -> IO ()
 runServer cfg =
   bracket (mkAppEnv cfg) closeAppEnv serveApp `catch` reportUnsafePath
  where
+  serveApp :: AppEnv -> IO ()
   serveApp env = do
     result <- runApp env serveForever
     case result of
@@ -148,8 +151,9 @@ runServer cfg =
         logError (aeLogger env) ("server failed: " <> T.pack (show serverError))
       Right () -> pure ()
 
+  reportUnsafePath :: UnsafePath -> IO ()
   reportUnsafePath (UnsafePath message) = do
-    hPutStrLn stderr ("error: " <> T.unpack message)
+    TIO.hPutStrLn stderr ("error: " <> message)
     exitWith (ExitFailure 1)
 
 serveForever :: App ()
@@ -199,10 +203,13 @@ warpSettings env =
     . Warp.setOnException onException
     $ Warp.defaultSettings
  where
+  cfg :: ServerConfig
   cfg = aeConfig env
+  installShutdown :: IO () -> IO ()
   installShutdown closeSocket = do
     stopState <- newMVar False
-    let handleSignal = do
+    let handleSignal :: IO ()
+        handleSignal = do
           alreadyStopping <- modifyMVar stopState $ \stopping -> pure (True, stopping)
           if alreadyStopping
             then exitImmediately ExitSuccess
@@ -211,11 +218,14 @@ warpSettings env =
     _ <- installHandler sigTERM (Catch handleSignal) Nothing
     pure ()
 
+  onException :: Maybe Request -> SomeException -> IO ()
   onException maybeRequest exception = do
-    let path = case maybeRequest of
+    let path :: T.Text
+        path = case maybeRequest of
           Nothing -> ""
           Just request -> T.intercalate "/" ("/" : pathInfo request)
-        method = maybe "" (T.pack . B8.unpack . requestMethod) maybeRequest
+        method :: T.Text
+        method = maybe "" (decodeUtf8With lenientDecode . requestMethod) maybeRequest
     logError (aeLogger env) $
       "request failed method="
         <> method

@@ -12,9 +12,10 @@ import Data.ByteString (ByteString)
 import Data.Conduit (ConduitT)
 import Data.Int (Int64)
 import Data.Text (Text)
-import Pigeon.Types (FileId, FileInfo, Health)
 import Servant
 import Servant.Conduit ()
+
+import Pigeon.Types (FileId, FileInfo, Health)
 
 -- | A streaming upload body. Nothing in this type permits whole-file buffering.
 type UploadBody = ConduitT () ByteString (ResourceT IO) ()

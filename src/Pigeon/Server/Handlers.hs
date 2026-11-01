@@ -235,6 +235,7 @@ unauthorized =
     { errHeaders = ("WWW-Authenticate", "Bearer realm=\"pigeon\"") : errHeaders base
     }
  where
+  base :: ServerError
   base = apiError err401 "unauthorized" "Missing or invalid bearer token"
 
 storageError :: StorageError -> ServerError
@@ -243,4 +244,3 @@ storageError = \case
   StorageBadGzip -> invalidRequest "request body is not valid gzip"
   StorageIdCollision -> apiError err503 "unavailable" "could not allocate a file id"
   StorageIo _ -> apiError err500 "internal_error" "internal storage failure"
-  StorageCorrupt _ -> apiError err500 "internal_error" "internal storage failure"

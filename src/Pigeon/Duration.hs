@@ -2,7 +2,6 @@
 module Pigeon.Duration (
   parseDuration,
   formatDuration,
-  durationSeconds,
   humanizeRemaining,
 ) where
 
@@ -64,6 +63,7 @@ formatDuration seconds
   | seconds <= 0 = "0s"
   | otherwise = T.concat (go seconds)
  where
+  go :: Int64 -> [Text]
   go 0 = []
   go remaining =
     let (w, afterW) = remaining `quotRem` 604800
@@ -76,12 +76,9 @@ formatDuration seconds
           ++ component 'm' m
           ++ component 's' s
 
+  component :: Char -> Int64 -> [Text]
   component _ 0 = []
   component unit n = [T.pack (show n) <> T.singleton unit]
-
--- | Total seconds in a duration, as an 'Int64'.
-durationSeconds :: Text -> Either Text Int64
-durationSeconds = parseDuration
 
 {- | Humanize a remaining duration for CLI output.
 

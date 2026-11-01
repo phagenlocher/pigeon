@@ -9,11 +9,12 @@ import Control.Exception.Safe (IOException, catch, try)
 import Control.Monad (when)
 import Control.Monad.IO.Class (liftIO)
 import Control.Monad.Reader (ask)
-import Control.Monad.Trans.Resource (ResourceT, runResourceT)
+import Control.Monad.Trans.Resource (runResourceT)
 import Data.ByteString (ByteString)
 import Data.ByteString qualified as BS
 import Data.ByteString.Builder qualified as Builder
 import Data.ByteString.Char8 qualified as B8
+import Data.ByteString.Lazy qualified as LBS
 import Data.Conduit
 import Data.Conduit.Combinators (sourceHandle)
 import Data.Conduit.Combinators qualified as CC
@@ -64,7 +65,7 @@ import Pigeon.Server.Db (lookupFile)
 import Pigeon.Server.Env (AppEnv (..))
 import Pigeon.Server.Log (logError, logWarn)
 import Pigeon.Server.Storage (openBlob)
-import Pigeon.Streaming (AcceptEncoding (..), parseAcceptEncoding, ungzipConduit)
+import Pigeon.Streaming (AcceptEncoding (..), parseAcceptEncoding, passThrough, ungzipConduit)
 import Pigeon.Types (
   FileId (..),
   StoredFile (..),
@@ -171,9 +172,6 @@ serveFile stored request isHead =
                       .| (case encoding of AcceptGzip -> passThrough; _ -> ungzipConduit)
                       .| CC.mapM_ (\chunk -> liftIO (send (Builder.byteString chunk) >> flush))
 
-passThrough :: ConduitT BS.ByteString BS.ByteString (ResourceT IO) ()
-passThrough = awaitForever yield
-
 chosenEncoding :: Request -> AcceptEncoding
 chosenEncoding request =
   maybe
@@ -223,7 +221,8 @@ htmlErrorWithHeaders status extra message =
 
 formResponse :: Status -> StoredFile -> Bool -> Bool -> Response
 formResponse status stored showError isHead =
-  let bodyBytes =
+  let bodyBytes :: LBS.ByteString
+      bodyBytes =
         renderHtml
           ( htmlPage
               (Just (sanitizeFilename (sfFilename stored)))
@@ -255,8 +254,9 @@ htmlHeaders =
     ("X-Robots-Tag", "noindex, nofollow")
   ]
 
-simplePage :: Text -> Html
-simplePage message =
+-- | The shared document shell; only the body differs between pages.
+pageShell :: Html -> Html
+pageShell body =
   H.docType
     <> H.html
       ( do
@@ -265,37 +265,32 @@ simplePage message =
             H.meta ! A.charset "utf-8"
             H.meta ! A.name "viewport" ! A.content "width=device-width, initial-scale=1"
             H.style (toHtml styleSheet)
-          H.body $
-            H.div ! A.class_ "card" $ do
-              H.h1 "Pigeon"
-              H.p (toHtml message)
+          H.body body
       )
+
+simplePage :: Text -> Html
+simplePage message =
+  pageShell $
+    H.div ! A.class_ "card" $ do
+      H.h1 "Pigeon"
+      H.p (toHtml message)
 
 htmlPage :: Maybe Text -> Bool -> Text -> Html
 htmlPage mFilename showError message =
-  H.docType
-    <> H.html
-      ( do
-          H.head $ do
-            H.title "Pigeon"
-            H.meta ! A.charset "utf-8"
-            H.meta ! A.name "viewport" ! A.content "width=device-width, initial-scale=1"
-            H.style (toHtml styleSheet)
-          H.body $ do
-            H.div ! A.class_ "card" $ do
-              H.h1 (maybe "Pigeon file" toHtml mFilename)
-              when showError $ H.p ! A.class_ "error" $ toHtml ("Incorrect password." :: Text)
-              H.form ! A.method "post" ! A.action "" $ do
-                H.p (toHtml message)
-                H.input
-                  ! A.type_ "password"
-                  ! A.name "password"
-                  ! A.required "required"
-                  ! A.autofocus "autofocus"
-                  ! A.autocomplete "current-password"
-                  ! A.maxlength "1024"
-                H.button ! A.type_ "submit" $ toHtml ("Download" :: Text)
-      )
+  pageShell $
+    H.div ! A.class_ "card" $ do
+      H.h1 (maybe "Pigeon file" toHtml mFilename)
+      when showError $ H.p ! A.class_ "error" $ toHtml ("Incorrect password." :: Text)
+      H.form ! A.method "post" ! A.action "" $ do
+        H.p (toHtml message)
+        H.input
+          ! A.type_ "password"
+          ! A.name "password"
+          ! A.required "required"
+          ! A.autofocus "autofocus"
+          ! A.autocomplete "current-password"
+          ! A.maxlength "1024"
+        H.button ! A.type_ "submit" $ toHtml ("Download" :: Text)
 
 styleSheet :: Text
 styleSheet =
@@ -312,7 +307,9 @@ styleSheet =
 readFormBody :: Request -> IO (Either () ByteString)
 readFormBody request = go 0 []
  where
+  limit :: Int
   limit = 8192
+  go :: Int -> [ByteString] -> IO (Either () ByteString)
   go total chunks = do
     chunk <- getRequestBodyChunk request
     if BS.null chunk

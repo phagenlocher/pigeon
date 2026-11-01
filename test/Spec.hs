@@ -27,7 +27,7 @@ import Data.Time (UTCTime, addUTCTime, diffUTCTime, getCurrentTime)
 import Data.Word (Word8)
 import Database.SQLite.Simple (Only (..), query_)
 import Network.HTTP.Client (responseHeaders)
-import Network.HTTP.Types (hContentType, statusCode)
+import Network.HTTP.Types (Header, hContentType, statusCode)
 import Servant.API (FromHttpApiData (parseUrlPiece), ToHttpApiData (toUrlPiece))
 import System.Directory (
   createDirectory,
@@ -144,7 +144,8 @@ main = hspec $ do
       parseUrlPiece (toUrlPiece fid) `shouldBe` Right fid
 
   describe "PBKDF2 password hashing" $ do
-    let fixtureHash =
+    let fixtureHash :: Text
+        fixtureHash =
           "sha512:25000:YWJjZGVmZ2hpamtsbW5vcA==:JRElYYrOMe9OIV4LDxaLTgO9ho8fFBVofXoQcdngi7AcuH6Amvmlj2B0y6y1UtQciXXBepSCS+rpy8/vDDQvoA=="
         fixture = hashPasswordWithIterationsAndSalt 25000 "abcdefghijklmnop" "foobar"
     it "reproduces the package fixture" $
@@ -301,7 +302,8 @@ main = hspec $ do
       db <- openDb (dir </> "pigeon.db")
       migrate db
       now <- getCurrentTime
-      let request =
+      let request :: StoreRequest
+          request =
             StoreRequest
               { srFilename = "bad.gz",
                 srContentType = "application/octet-stream",
@@ -312,7 +314,7 @@ main = hspec $ do
                 srBody = yieldBody "not gzip"
               }
       result <- storeUpload storage db request
-      result `shouldSatisfy` isLeft
+      result `shouldBe` Left StorageBadGzip
       listLiveFiles db now `shouldReturn` []
       listBlobIds storage `shouldReturn` []
       listTempFiles storage `shouldReturn` []
@@ -322,7 +324,8 @@ main = hspec $ do
       db <- openDb (dir </> "pigeon.db")
       migrate db
       now <- getCurrentTime
-      let request =
+      let request :: StoreRequest
+          request =
             StoreRequest
               { srFilename = "big",
                 srContentType = "application/octet-stream",
@@ -344,7 +347,8 @@ main = hspec $ do
           limit = 4096 :: Int64
       encoded <- gzipBytes payload
       BS.length encoded `shouldSatisfy` (< fromIntegral limit)
-      let request =
+      let request :: StoreRequest
+          request =
             StoreRequest
               { srFilename = "bomb.gz",
                 srContentType = "application/octet-stream",
@@ -363,7 +367,8 @@ main = hspec $ do
     it "fails the upload and removes state when the temp file cannot be fsynced" $
       withTempDataDir $ \dir -> do
         messages <- newIORef []
-        let hooks =
+        let hooks :: StorageHooks
+            hooks =
               defaultStorageHooks
                 { shSyncFile = \_ -> throwIO (userError "fsync failed"),
                   shError = recordMessage messages
@@ -382,7 +387,8 @@ main = hspec $ do
         closeDb db
     it "fails the upload and removes the blob when directory fsync fails" $
       withTempDataDir $ \dir -> do
-        let hooks =
+        let hooks :: StorageHooks
+            hooks =
               defaultStorageHooks
                 { shSyncDir = \_ -> throwIO (userError "directory fsync failed")
                 }
@@ -399,7 +405,8 @@ main = hspec $ do
     it "continues and warns once when directory fsync is unsupported" $
       withTempDataDir $ \dir -> do
         warnings <- newIORef []
-        let hooks =
+        let hooks :: StorageHooks
+            hooks =
               defaultStorageHooks
                 { shSyncDir = \_ -> pure DirSyncUnsupported,
                   shWarn = recordMessage warnings
@@ -418,7 +425,8 @@ main = hspec $ do
     it "logs an orphan and inserts no row when post-rename cleanup fails" $
       withTempDataDir $ \dir -> do
         warnings <- newIORef []
-        let hooks =
+        let hooks :: StorageHooks
+            hooks =
               defaultStorageHooks
                 { shSyncDir = \_ -> throwIO (userError "directory fsync failed"),
                   shRemoveBlob = \_ -> throwIO (userError "cannot remove"),
@@ -435,6 +443,21 @@ main = hspec $ do
         recorded <- readIORef warnings
         recorded `shouldSatisfy` any (T.isInfixOf "orphan")
         closeDb db
+
+  describe "database" $ do
+    it "returns only the ids that were actually deleted" $ withTempDataDir $ \dir -> do
+      storage <- initStorage defaultStorageHooks dir
+      db <- openDb (dir </> "pigeon.db")
+      migrate db
+      now <- getCurrentTime
+      stored <-
+        storeUpload storage db (storeRequest now Nothing "payload")
+          >>= either (fail . show) pure
+      let fileId = sfId stored
+      deleted <- deleteFileRows db [fileId, FileId "0000000000000000"]
+      deleted `shouldBe` [fileId]
+      allFiles db `shouldReturn` []
+      closeDb db
 
   describe "path safety" $ do
     it "creates private storage directories" $ withTempDataDir $ \dir -> do
@@ -613,10 +636,12 @@ main = hspec $ do
           BS.empty
       statusCode (statusOf response) `shouldBe` 400
     it "rejects a password over 1024 UTF-8 bytes with 400" $ withTestServer $ \_ port -> do
-      let tooLong =
+      let tooLong :: [Header]
+          tooLong =
             [ ("Authorization", encodeUtf8 authHeader),
               ("X-Pigeon-Password", encodeUtf8 (encodePassword (T.replicate 1025 "a")))
             ]
+          atLimit :: [Header]
           atLimit =
             [ ("Authorization", encodeUtf8 authHeader),
               ("X-Pigeon-Password", encodeUtf8 (encodePassword (T.replicate 1024 "a")))
@@ -685,6 +710,7 @@ crockfordAlphabet = "0123456789abcdefghjkmnpqrstvwxyz"
 decodeCrockford :: Text -> Maybe Integer
 decodeCrockford = T.foldl' step (Just 0)
  where
+  step :: Maybe Integer -> Char -> Maybe Integer
   step Nothing _ = Nothing
   step (Just acc) c =
     (\digit -> acc * 32 + fromIntegral digit)

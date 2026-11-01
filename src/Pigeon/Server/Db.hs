@@ -25,7 +25,7 @@ module Pigeon.Server.Db (
 
 import Control.Concurrent.MVar
 import Control.Exception.Safe (SomeException, bracket, mask, onException, throwIO, try)
-import Control.Monad (forM_, void)
+import Control.Monad (forM, void)
 import Data.Int (Int64)
 import Data.Maybe (catMaybes)
 import Data.Set (Set)
@@ -195,9 +195,12 @@ deleteFileRows :: Db -> [FileId] -> IO [FileId]
 deleteFileRows _ [] = pure []
 deleteFileRows db ids = withConn db $ \connection ->
   withImmediate connection $ do
-    forM_ ids $ \fid ->
-      execute connection "DELETE FROM files WHERE id = ?" (Only (unFileId fid))
-    pure ids
+    deleted <-
+      forM ids $ \fid -> do
+        execute connection "DELETE FROM files WHERE id = ?" (Only (unFileId fid))
+        changed <- changes connection
+        pure (if changed > 0 then Just fid else Nothing)
+    pure (catMaybes deleted)
 
 expiredIds :: Db -> UTCTime -> IO [FileId]
 expiredIds db now = withConn db $ \connection -> do
@@ -215,6 +218,7 @@ deleteRowsMissingBlob db blobExists = do
     then pure []
     else deleteFileRows db (map sfId missing)
  where
+  check :: StoredFile -> IO (Maybe StoredFile)
   check stored = do
     exists <- blobExists (sfId stored)
     pure (if exists then Nothing else Just stored)
@@ -261,6 +265,7 @@ withImmediate connection action = mask $ \restore -> do
       throwIO err
     Right () -> pure result
  where
+  rollback :: IO ()
   rollback = void (try (execute_ connection "ROLLBACK") :: IO (Either SomeException ()))
 
 -- | Detect a SQLite UNIQUE constraint violation.

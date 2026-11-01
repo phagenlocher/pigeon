@@ -5,8 +5,6 @@ module Pigeon.Server.Env (
   AppEnv (..),
 ) where
 
-import Data.Time (UTCTime)
-
 import Pigeon.Server.Config (ServerConfig)
 import Pigeon.Server.Db (Db)
 import Pigeon.Server.Log (Logger)
@@ -16,6 +14,5 @@ data AppEnv = AppEnv
   { aeConfig :: ServerConfig,
     aeDb :: Db,
     aeStorage :: Storage,
-    aeLogger :: Logger,
-    aeStart :: UTCTime
+    aeLogger :: Logger
   }

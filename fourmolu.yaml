@@ -15,31 +15,10 @@ column-limit: 100
 # How to place commas in multi-line lists, records, etc.
 comma-style: trailing
 
-# Modules defined by the current Cabal package for import grouping
-local-modules:
-  - Pigeon.API
-  - Pigeon.Client
-  - Pigeon.Client.Api
-  - Pigeon.Client.Commands
-  - Pigeon.Client.Config
-  - Pigeon.Client.Output
-  - Pigeon.Config
-  - Pigeon.Duration
-  - Pigeon.Password
-  - Pigeon.Server
-  - Pigeon.Server.App
-  - Pigeon.Server.Auth
-  - Pigeon.Server.Config
-  - Pigeon.Server.Db
-  - Pigeon.Server.Env
-  - Pigeon.Server.Handlers
-  - Pigeon.Server.Log
-  - Pigeon.Server.PathSafety
-  - Pigeon.Server.Storage
-  - Pigeon.Server.Sweeper
-  - Pigeon.Server.Web
-  - Pigeon.Streaming
-  - Pigeon.Types
+# Group imports by scope: external modules first, then modules defined by the
+# current Cabal package. Local modules are detected from pigeon.cabal, so the
+# Pigeon.* modules do not need to be listed here.
+import-grouping: by-scope
 
 # Whether to sort constraints
 sort-constraints: true

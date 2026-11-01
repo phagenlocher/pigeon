@@ -16,12 +16,33 @@ import Data.ByteString.Lazy qualified as LBS
 import Data.Conduit
 import Data.IORef
 import Data.Int (Int64)
+import Data.List (nub)
 import Data.Maybe (fromMaybe)
-import Data.Text (Text)
+import Data.Text (Text, dropWhileEnd)
 import Data.Text qualified as T
 import Data.Text.Encoding (encodeUtf8)
-import Data.Time (diffUTCTime, getCurrentTime)
+import Data.Text.IO qualified as TIO
+import Data.Time (UTCTime, diffUTCTime, getCurrentTime)
 import Network.HTTP.Types.Status (statusCode)
+import Servant.Client (ClientError (..), responseBody, responseStatusCode)
+import Servant.Client.Core.Response (Response)
+import System.Directory (doesFileExist, getFileSize)
+import System.Exit (ExitCode (..))
+import System.FilePath (takeFileName)
+import System.IO (
+  Handle,
+  IOMode (ReadMode),
+  hClose,
+  hFlush,
+  hGetEcho,
+  hIsTerminalDevice,
+  hSetEcho,
+  openBinaryFile,
+  stderr,
+  stdin,
+ )
+import System.Posix.Files (FileStatus, getFileStatus, isRegularFile)
+
 import Pigeon.Client.Api (ApiClient (..), ClientApi (..), mkClientApi, runApi)
 import Pigeon.Client.Config (
   ClientCommand (..),
@@ -37,33 +58,15 @@ import Pigeon.Client.Output (
   formatSize,
  )
 import Pigeon.Password (validatePassword)
-import Pigeon.Streaming (countBytes, gzipConduit, sourceHandleChunked)
+import Pigeon.Streaming (countBytes, gzipConduit, passThrough, sourceHandleChunked)
 import Pigeon.Types (
   ApiError (..),
   ApiErrorEnvelope (..),
   FileId (..),
   FileInfo (..),
+  epochToUtc,
   secretText,
  )
-import Servant.Client (ClientError (..), responseBody, responseStatusCode)
-import System.Directory (doesFileExist, getFileSize)
-import System.Exit (ExitCode (..))
-import System.FilePath (takeFileName)
-import System.IO (
-  Handle,
-  IOMode (ReadMode),
-  hClose,
-  hFlush,
-  hGetEcho,
-  hIsTerminalDevice,
-  hPutStr,
-  hPutStrLn,
-  hSetEcho,
-  openBinaryFile,
-  stderr,
-  stdin,
- )
-import System.Posix.Files (FileStatus, getFileStatus, isRegularFile)
 
 -- | Failure with a CLI exit code and a user-facing message.
 data Failure = Failure
@@ -111,7 +114,7 @@ runUpload cfg clientApi options = do
               now <- getCurrentTime
               if ccJson cfg
                 then LBS.putStr (encode info) >> putStrLn ""
-                else putStr (T.unpack (formatFileInfo now info))
+                else TIO.putStr (formatFileInfo now info)
               pure 0
 
 {- | Bytes read from the input file per chunk. Larger reads cut syscall and
@@ -149,7 +152,8 @@ performUpload cfg clientApi options filename contentType compression passwordHea
       <> " compression="
       <> maybe "identity" (const "gzip") compression
   started <- getCurrentTime
-  let body =
+  let body :: ConduitT () BS.ByteString (ResourceT IO) ()
+      body =
         sourceHandleChunked uploadChunkSize handle
           .| countBytes counter
           .| progressConduit showProgress filename totalSize counter
@@ -204,12 +208,12 @@ withInputFile path action = do
 resolvePassword :: PasswordSource -> IO (Either Failure (Maybe Text))
 resolvePassword NoPassword = pure (Right Nothing)
 resolvePassword StdinPassword = do
-  lineResult <- try getLine :: IO (Either IOException String)
+  lineResult <- try TIO.getLine :: IO (Either IOException Text)
   case lineResult of
     Left _ -> pure (Left (Failure 2 "usage_error" "could not read password from stdin"))
     Right line ->
       pure $ do
-        password <- validatePasswordInput (T.pack (dropTrailingCR line))
+        password <- validatePasswordInput (dropTrailingCR line)
         Right (Just (encodePassword password))
 resolvePassword PromptPassword = do
   terminal <- hIsTerminalDevice stdin
@@ -234,14 +238,14 @@ promptPassword :: IO Text
 promptPassword =
   bracket (hGetEcho stdin) (hSetEcho stdin) $ \_ -> do
     hSetEcho stdin False
-    hPutStr stderr "Password: "
+    TIO.hPutStr stderr "Password: "
     hFlush stderr
-    password <- getLine
-    hPutStrLn stderr ""
-    pure (T.pack (dropTrailingCR password))
+    password <- TIO.getLine
+    TIO.hPutStrLn stderr ""
+    pure (dropTrailingCR password)
 
-dropTrailingCR :: String -> String
-dropTrailingCR = reverse . dropWhile (== '\r') . reverse
+dropTrailingCR :: Text -> Text
+dropTrailingCR = dropWhileEnd (== '\r')
 
 -- * List
 
@@ -257,7 +261,7 @@ runList cfg clientApi = do
         then LBS.putStr (encode files) >> putStrLn ""
         else do
           now <- getCurrentTime
-          putStr (T.unpack (formatFileTable now files))
+          TIO.putStr (formatFileTable now files)
       pure 0
 
 -- * Delete
@@ -291,9 +295,9 @@ runDelete cfg clientApi options = do
             )
           putStrLn ""
         else do
-          forM_ deleted $ \fileId -> putStrLn ("Deleted " <> T.unpack fileId)
+          forM_ deleted $ \fileId -> TIO.putStrLn ("Deleted " <> fileId)
           forM_ failed $ \(fileId, failure) ->
-            hPutStrLn stderr ("error: " <> T.unpack fileId <> ": " <> T.unpack (failureMessage failure))
+            TIO.hPutStrLn stderr ("error: " <> fileId <> ": " <> failureMessage failure)
       pure (deleteExitCode failed)
 
 confirmDelete :: ClientConfig -> Bool -> Int -> IO (Either Int ())
@@ -309,22 +313,20 @@ confirmDelete cfg assumeYes count
               (Failure 2 "usage_error" "confirmation requires --yes when stdin is not a terminal")
           pure (Left code)
         else do
-          hPutStr stderr ("Delete " <> show count <> " files? [y/N] ")
+          TIO.hPutStr stderr ("Delete " <> T.pack (show count) <> " files? [y/N] ")
           hFlush stderr
-          answer <- getLine
+          answer <- TIO.getLine
           pure $
-            if T.toLower (T.strip (T.pack answer)) `elem` ["y", "yes"]
+            if T.toLower (T.strip answer) `elem` ["y", "yes"]
               then Right ()
               else Left 8
 
 deleteExitCode :: [(Text, Failure)] -> Int
 deleteExitCode [] = 0
 deleteExitCode failed =
-  case unique (map (failureExit . snd) failed) of
+  case nub (map (failureExit . snd) failed) of
     [code] -> code
     _ -> 1
- where
-  unique = foldr (\x acc -> if x `elem` acc then acc else x : acc) []
 
 -- * Errors and output
 
@@ -335,8 +337,8 @@ reportFailure cfg failure = do
       LBS.hPutStr
         stderr
         (encode (ApiErrorEnvelope (ApiError (failureCode failure) (failureMessage failure))))
-      hPutStrLn stderr ""
-    else hPutStrLn stderr ("error: " <> T.unpack (failureMessage failure))
+      TIO.hPutStrLn stderr ""
+    else TIO.hPutStrLn stderr ("error: " <> failureMessage failure)
   pure (failureExit failure)
 
 mapClientError :: ClientError -> Failure
@@ -344,32 +346,25 @@ mapClientError = \case
   FailureResponse _ response ->
     let status = statusCode (responseStatusCode response)
         apiError = decodeApiError response
-        message = maybe (defaultMessage status) aeMessage apiError
-        code = maybe (defaultCode status) aeCode apiError
-     in Failure (exitForStatus status) code message
+        (exitCode, defaultCode, defaultMessage) = statusDefaults status
+        message = maybe defaultMessage aeMessage apiError
+        code = maybe defaultCode aeCode apiError
+     in Failure exitCode code message
   ConnectionError _ ->
     Failure 5 "network_error" "network request failed"
   DecodeFailure _ _ -> Failure 1 "unexpected_response" "the server returned an unexpected response"
   UnsupportedContentType _ _ -> Failure 1 "unexpected_response" "the server returned an unsupported content type"
   InvalidContentTypeHeader _ -> Failure 1 "unexpected_response" "the server returned an invalid content type"
  where
+  decodeApiError :: Response -> Maybe ApiError
   decodeApiError response =
     either (const Nothing) Just (eitherDecode (responseBody response))
-  exitForStatus status
-    | status == 401 || status == 403 = 3
-    | status == 404 = 4
-    | status >= 500 = 6
-    | otherwise = 1
-  defaultCode status
-    | status == 401 || status == 403 = "unauthorized"
-    | status == 404 = "not_found"
-    | status >= 500 = "internal_error"
-    | otherwise = "invalid_request"
-  defaultMessage status
-    | status == 401 || status == 403 = "authentication failed"
-    | status == 404 = "file not found"
-    | status >= 500 = "server error"
-    | otherwise = "request failed"
+  statusDefaults :: Int -> (Int, Text, Text)
+  statusDefaults status
+    | status == 401 || status == 403 = (3, "unauthorized", "authentication failed")
+    | status == 404 = (4, "not_found", "file not found")
+    | status >= 500 = (6, "internal_error", "server error")
+    | otherwise = (1, "invalid_request", "request failed")
 
 -- * Progress
 
@@ -384,39 +379,37 @@ the password, or file contents.
 -}
 logVerbose :: ClientConfig -> Text -> IO ()
 logVerbose cfg message =
-  when (ccVerbose cfg) $ hPutStrLn stderr ("verbose: " <> T.unpack message)
-
-passThrough :: ConduitT BS.ByteString BS.ByteString (ResourceT IO) ()
-passThrough = awaitForever yield
+  when (ccVerbose cfg) $ TIO.hPutStrLn stderr ("verbose: " <> message)
 
 -- | Minimum interval between progress redraws, in milliseconds (CLI-083).
 progressIntervalMs :: Double
 progressIntervalMs = 75
 
 -- | Return to column 0 and erase the entire current line.
-eraseLine :: String
+eraseLine :: Text
 eraseLine = "\r\ESC[2K"
 
 progressConduit ::
   Bool -> Text -> Int64 -> IORef Int64 -> ConduitT BS.ByteString BS.ByteString (ResourceT IO) ()
 progressConduit enabled filename total counter
   | not enabled = awaitForever yield
-  | otherwise = go Nothing
+  | otherwise = go (epochToUtc 0)
  where
+  go :: UTCTime -> ConduitT BS.ByteString BS.ByteString (ResourceT IO) ()
   go lastPrint =
     await >>= \case
       Nothing -> pure ()
       Just chunk -> do
         now <- liftIO getCurrentTime
-        let elapsed :: Maybe Double
-            elapsed = fmap (realToFrac . diffUTCTime now) lastPrint
+        let elapsed :: Double
+            elapsed = realToFrac $ diffUTCTime now lastPrint
             shouldPrintProgress :: Bool
-            shouldPrintProgress = maybe True (\x -> x >= progressIntervalMs / 1000) elapsed
+            shouldPrintProgress = elapsed * 1000 >= progressIntervalMs
         when shouldPrintProgress $ do
           current <- liftIO (readIORef counter)
           liftIO (printProgress filename total current)
         yield chunk
-        go (if shouldPrintProgress then Just now else lastPrint)
+        go (if shouldPrintProgress then now else lastPrint)
 
 printProgress :: Text -> Int64 -> Int64 -> IO ()
 printProgress filename total current = do
@@ -424,6 +417,7 @@ printProgress filename total current = do
       percentage
         | total <= 0 = 100
         | otherwise = min 100 (fromIntegral ((current * 100) `div` total))
+      detail :: Text
       detail
         | total <= 0 = formatSize current
         | otherwise =
@@ -433,7 +427,7 @@ printProgress filename total current = do
               <> " ("
               <> T.pack (show percentage)
               <> "%)"
-  hPutStr stderr (eraseLine <> "Uploading " <> T.unpack filename <> ": " <> T.unpack detail)
+  TIO.hPutStr stderr (eraseLine <> "Uploading " <> filename <> ": " <> detail)
   hFlush stderr
 
 {- | Erase the in-place progress line so only the command result remains
@@ -442,5 +436,5 @@ line because the body has no chunks (CLI-084).
 -}
 clearProgress :: IO ()
 clearProgress = do
-  hPutStr stderr eraseLine
+  TIO.hPutStr stderr eraseLine
   hFlush stderr

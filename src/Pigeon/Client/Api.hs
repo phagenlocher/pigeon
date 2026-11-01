@@ -14,6 +14,7 @@ import Network.Connection (TLSSettings (..))
 import Network.HTTP.Client (
   ManagerSettings (..),
   Request (..),
+  ResponseTimeout,
   newManager,
   responseTimeoutMicro,
  )
@@ -57,14 +58,17 @@ data ClientApi = ClientApi
 -- | Create the HTTP manager and Servant client environment.
 mkClientApi :: ClientConfig -> IO ClientApi
 mkClientApi cfg = do
-  let timeout =
+  let timeout :: ResponseTimeout
+      timeout =
         responseTimeoutMicro
           (fromIntegral (max 1 (ccTimeoutSeconds cfg)) * 1000000)
+      baseSettings :: ManagerSettings
       baseSettings
         | ccInsecure cfg =
             let supported = def :: Supported
              in mkManagerSettings (TLSSettingsSimple True False False supported) Nothing
         | otherwise = tlsManagerSettings
+      settings :: ManagerSettings
       settings =
         baseSettings
           { managerResponseTimeout = timeout,

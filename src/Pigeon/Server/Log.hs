@@ -12,9 +12,10 @@ module Pigeon.Server.Log (
   requestLogger,
 ) where
 
-import Data.ByteString.Char8 qualified as B8
 import Data.Text (Text)
 import Data.Text qualified as T
+import Data.Text.Encoding (decodeUtf8With)
+import Data.Text.Encoding.Error (lenientDecode)
 import Data.Time (diffUTCTime, getCurrentTime)
 import Data.Time.Format qualified as Time
 import Network.HTTP.Types.Status (statusCode)
@@ -45,7 +46,8 @@ warnings; @--verbose@ lowers the minimum level to 'Debug'.
 mkLogger :: ServerConfig -> IO Logger
 mkLogger cfg = do
   set <- Log.newStderrLoggerSet Log.defaultBufSize
-  let minLevel
+  let minLevel :: LogLevel
+      minLevel
         | scVerbose cfg = Debug
         | otherwise = Info
   pure Logger{lgSet = set, lgMinLevel = minLevel, lgQuiet = scQuiet cfg}
@@ -60,6 +62,7 @@ logMessage logger level message =
     let line = timestamp <> " " <> T.pack (show level) <> " " <> message <> "\n"
     Log.pushLogStr (lgSet logger) (Log.toLogStr line)
  where
+  whenLevel :: LogLevel -> IO () -> IO ()
   whenLevel lvl action
     | lvl >= lgMinLevel logger = action
     | otherwise = pure ()
@@ -91,7 +94,7 @@ requestLogger logger app request respond
             status = responseStatus response
             message =
               "request method="
-                <> T.pack (B8.unpack (requestMethod request))
+                <> decodeUtf8With lenientDecode (requestMethod request)
                 <> " path="
                 <> path
                 <> " status="

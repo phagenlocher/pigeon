@@ -14,12 +14,13 @@ import Data.Int (Int64)
 import Data.Maybe (fromMaybe)
 import Data.Text (Text)
 import Data.Text qualified as T
+import Data.Text.IO qualified as TIO
 import Options.Applicative
 import Servant.Client.Core (BaseUrl (..), Scheme (..))
-import System.Exit (ExitCode (..), exitWith)
-import System.IO (hPutStrLn, stderr)
+import System.IO (stderr)
 
 import Pigeon.Config (
+  exitWithText,
   lookupEnvText,
   normalizeBaseUrl,
   parseBaseUrlText,
@@ -92,6 +93,7 @@ durationSecondsOption :: Mod OptionFields Int64 -> Parser Int64
 durationSecondsOption =
   option (eitherReader parseReader)
  where
+  parseReader :: String -> Either String Int64
   parseReader raw = case parseDuration (T.pack raw) of
     Left message -> Left (T.unpack message)
     Right seconds -> Right seconds
@@ -116,9 +118,9 @@ globalParser :: Parser RawGlobal
 globalParser =
   RawGlobal
     <$> optional
-      (T.pack <$> strOption (long "server" <> metavar "URL" <> help "Server base URL (env: PIGEON_SERVER)"))
+      (strOption (long "server" <> metavar "URL" <> help "Server base URL (env: PIGEON_SERVER)"))
     <*> optional
-      (T.pack <$> strOption (long "token" <> metavar "TOKEN" <> help "Bearer token (env: PIGEON_TOKEN)"))
+      (strOption (long "token" <> metavar "TOKEN" <> help "Bearer token (env: PIGEON_TOKEN)"))
     <*> optional
       (strOption (long "token-file" <> metavar "FILE" <> help "Read the token from the first line of FILE"))
     <*> switch (long "insecure" <> help "Disable TLS certificate validation (development only)")
@@ -137,13 +139,14 @@ uploadParser =
               ( durationSecondsOption
                   (long "expires-in" <> metavar "DURATION" <> help "Lifetime; server default when omitted")
               )
-            <*> optional (T.pack <$> strOption (long "name" <> metavar "NAME" <> help "Display filename"))
+            <*> optional (strOption (long "name" <> metavar "NAME" <> help "Display filename"))
             <*> optional
-              (T.pack <$> strOption (long "content-type" <> metavar "TYPE" <> help "Original content type"))
+              (strOption (long "content-type" <> metavar "TYPE" <> help "Original content type"))
             <*> passwordParser
             <*> switch (long "no-compress" <> help "Send the body without gzip compression")
         )
  where
+  passwordParser :: Parser PasswordSource
   passwordParser =
     fmap
       (fromMaybe NoPassword)
@@ -157,7 +160,7 @@ deleteParser :: Parser ClientCommand
 deleteParser =
   Delete
     <$> ( DeleteOptions
-            <$> some (T.pack <$> argument str (metavar "ID"))
+            <$> some (argument str (metavar "ID"))
             <*> switch (long "yes" <> help "Do not ask for confirmation")
         )
 
@@ -181,6 +184,7 @@ clientParserInfo =
         <> header "pigeon-client"
     )
  where
+  versionOption :: Parser (a -> a)
   versionOption =
     infoOption
       "0.1.0.0"
@@ -199,19 +203,14 @@ parseClientConfig = do
   envServer <- lookupEnvText "PIGEON_SERVER"
   envToken <- lookupEnvText "PIGEON_TOKEN"
 
-  when (rgQuiet && rgVerbose) $ do
-    hPutStrLn stderr "error: --quiet and --verbose are mutually exclusive"
-    exitWith (ExitFailure 2)
+  when (rgQuiet && rgVerbose) $
+    exitWithText 2 "error: --quiet and --verbose are mutually exclusive"
 
   let serverText = fromMaybe "http://127.0.0.1:8080" (rgServer <|> envServer)
   serverBase <- case normalizeBaseUrl serverText of
-    Left message -> do
-      hPutStrLn stderr ("error: --server: " <> T.unpack message)
-      exitWith (ExitFailure 2)
+    Left message -> exitWithText 2 ("error: --server: " <> message)
     Right normalized -> case parseBaseUrlText normalized of
-      Left message -> do
-        hPutStrLn stderr ("error: --server: " <> T.unpack message)
-        exitWith (ExitFailure 2)
+      Left message -> exitWithText 2 ("error: --server: " <> message)
       Right base -> pure (base, normalized)
 
   token <- requireToken =<< tokenFromSources rgToken rgTokenFile envToken
@@ -219,17 +218,17 @@ parseClientConfig = do
   timeout <- case rgTimeout of
     Nothing -> pure 3600
     Just seconds | seconds >= 1 -> pure seconds
-    Just _ -> do
-      hPutStrLn stderr "error: --timeout must be at least 1s"
-      exitWith (ExitFailure 2)
+    Just _ -> exitWithText 2 "error: --timeout must be at least 1s"
 
   validatedCommand <- validateCommand clientCommand
 
   let (baseUrl, serverUrlText) = serverBase
   when ("http://" `T.isPrefixOf` serverUrlText) $
-    hPutStrLn stderr "warning: sending the upload token over plain HTTP; use TLS outside development"
+    TIO.hPutStrLn
+      stderr
+      "warning: sending the upload token over plain HTTP; use TLS outside development"
   when (rgInsecure && "https://" `T.isPrefixOf` serverUrlText) $
-    hPutStrLn stderr "warning: TLS certificate validation is disabled"
+    TIO.hPutStrLn stderr "warning: TLS certificate validation is disabled"
 
   pure
     ClientConfig
@@ -264,9 +263,8 @@ validateCommand = \case
     | null (doIds options) -> usage "error: delete requires at least one id"
     | otherwise -> pure (Delete options)
  where
-  usage message = do
-    hPutStrLn stderr message
-    exitWith (ExitFailure 2)
+  usage :: Text -> IO a
+  usage = exitWithText 2
 
 validContentType :: Text -> Bool
 validContentType rawType =

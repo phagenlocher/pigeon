@@ -42,6 +42,7 @@ validatePassword password
   | BS.length bytes > 1024 = Left "password must be at most 1024 UTF-8 bytes"
   | otherwise = Right ()
  where
+  bytes :: BS.ByteString
   bytes = encodeUtf8 password
 
 -- | Build PBKDF2 parameters for Pigeon v1.
@@ -94,7 +95,9 @@ parseStoredPasswordHash stored
         | pbkdf2Iterations params > 100000000 -> Left "stored password hash iteration count is too high"
         | otherwise -> Right (StoredPasswordHash stored)
  where
+  fields :: [Text]
   fields = T.splitOn ":" stored
+  algorithm :: Text
   algorithm = case fields of
     (a : _) -> a
     [] -> ""

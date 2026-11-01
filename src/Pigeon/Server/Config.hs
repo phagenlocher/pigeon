@@ -13,14 +13,15 @@ import Data.Maybe (fromMaybe, isJust)
 import Data.String (fromString)
 import Data.Text (Text)
 import Data.Text qualified as T
+import Data.Text.IO qualified as TIO
 import Network.Wai.Handler.Warp (HostPreference)
 import Options.Applicative
 import System.Directory (doesFileExist, makeAbsolute)
-import System.Exit (ExitCode (..), die, exitWith)
 import System.FilePath (isAbsolute, normalise, (</>))
-import System.IO (hPutStrLn, stderr)
+import System.IO (stderr)
 
 import Pigeon.Config (
+  exitWithText,
   lookupEnvText,
   normalizeBaseUrl,
   parseByteCount,
@@ -81,7 +82,7 @@ defaultServerConfig =
 
 data RawOptions = RawOptions
   { roHost :: Maybe String,
-    roPort :: Maybe String,
+    roPort :: Maybe Text,
     roDataDir :: Maybe FilePath,
     roDb :: Maybe FilePath,
     roToken :: Maybe Text,
@@ -94,7 +95,7 @@ data RawOptions = RawOptions
     roMaxExpiry :: Maybe Text,
     roSweepInterval :: Maybe Text,
     roMaxUploadSize :: Maybe Text,
-    roPasswordHashIterations :: Maybe String,
+    roPasswordHashIterations :: Maybe Text,
     roQuiet :: Bool,
     roVerbose :: Bool
   }
@@ -106,33 +107,26 @@ rawOptionsParser =
     <*> optional (strOption (long "port" <> metavar "PORT" <> help "TCP port (default 8080)"))
     <*> optional (strOption (long "data-dir" <> metavar "DIR" <> help "Data directory (default ./data)"))
     <*> optional (strOption (long "db" <> metavar "FILE" <> help "SQLite database path"))
-    <*> optional (T.pack <$> strOption (long "token" <> metavar "TOKEN" <> help "Shared bearer token"))
+    <*> optional (strOption (long "token" <> metavar "TOKEN" <> help "Shared bearer token"))
     <*> optional (strOption (long "token-file" <> metavar "FILE" <> help "Read the bearer token from FILE"))
     <*> optional (strOption (long "tls-cert" <> metavar "FILE" <> help "PEM certificate chain"))
     <*> optional (strOption (long "tls-key" <> metavar "FILE" <> help "PEM private key"))
     <*> switch (long "no-tls" <> help "Explicitly disable TLS (development only)")
     <*> optional
-      (T.pack <$> strOption (long "public-url" <> metavar "URL" <> help "Public base URL for share links"))
+      (strOption (long "public-url" <> metavar "URL" <> help "Public base URL for share links"))
     <*> optional
-      ( T.pack
-          <$> strOption
-            ( long "default-expiry"
-                <> metavar "DURATION"
-                <> help "Expiry when uploads omit expires_in (default 7d)"
-            )
+      ( strOption
+          ( long "default-expiry"
+              <> metavar "DURATION"
+              <> help "Expiry when uploads omit expires_in (default 7d)"
+          )
       )
     <*> optional
-      ( T.pack
-          <$> strOption (long "max-expiry" <> metavar "DURATION" <> help "Maximum allowed expiry (default 365d)")
-      )
+      (strOption (long "max-expiry" <> metavar "DURATION" <> help "Maximum allowed expiry (default 365d)"))
     <*> optional
-      ( T.pack
-          <$> strOption (long "sweep-interval" <> metavar "DURATION" <> help "Expiry sweep period (default 60s)")
-      )
+      (strOption (long "sweep-interval" <> metavar "DURATION" <> help "Expiry sweep period (default 60s)"))
     <*> optional
-      ( T.pack
-          <$> strOption (long "max-upload-size" <> metavar "BYTES" <> help "Maximum upload bytes, 0 = unlimited")
-      )
+      (strOption (long "max-upload-size" <> metavar "BYTES" <> help "Maximum upload bytes, 0 = unlimited"))
     <*> optional
       ( strOption
           (long "password-hash-iterations" <> metavar "N" <> help "PBKDF2 iterations (default 600000)")
@@ -149,6 +143,7 @@ serverParserInfo =
         <> header "pigeon-server"
     )
  where
+  versionOption :: Parser (a -> a)
   versionOption =
     infoOption
       (T.unpack pigeonVersion)
@@ -158,7 +153,7 @@ serverParserInfo =
 parseServerConfig :: IO ServerConfig
 parseServerConfig = do
   envHost <- fmap T.unpack <$> lookupEnvText "PIGEON_HOST"
-  envPort <- fmap T.unpack <$> lookupEnvText "PIGEON_PORT"
+  envPort <- lookupEnvText "PIGEON_PORT"
   envDataDir <- fmap T.unpack <$> lookupEnvText "PIGEON_DATA_DIR"
   envDb <- fmap T.unpack <$> lookupEnvText "PIGEON_DB"
   envToken <- lookupEnvText "PIGEON_TOKEN"
@@ -169,10 +164,11 @@ parseServerConfig = do
   envMaxExpiry <- lookupEnvText "PIGEON_MAX_EXPIRY"
   envSweep <- lookupEnvText "PIGEON_SWEEP_INTERVAL"
   envMaxUpload <- lookupEnvText "PIGEON_MAX_UPLOAD_SIZE"
-  envIterations <- fmap T.unpack <$> lookupEnvText "PIGEON_PASSWORD_HASH_ITERATIONS"
+  envIterations <- lookupEnvText "PIGEON_PASSWORD_HASH_ITERATIONS"
 
   raw <- runParser "pigeon-server" serverParserInfo
-  let pick cli env = cli <|> env
+  let pick :: Maybe a -> Maybe a -> Maybe a
+      pick cli env = cli <|> env
       host = fromMaybe "127.0.0.1" (pick (roHost raw) envHost)
       portText = fromMaybe "8080" (pick (roPort raw) envPort)
       dataDirText = fromMaybe "./data" (pick (roDataDir raw) envDataDir)
@@ -188,34 +184,15 @@ parseServerConfig = do
 
   token <- requireToken =<< tokenFromSources (roToken raw) (roTokenFile raw) envToken
 
-  port <- case parsePositiveInt (T.pack portText) of
-    Right n | n <= 65535 -> pure n
-    _ -> die "error: --port must be an integer between 1 and 65535"
-
-  defaultExpiry <- case parseDuration defaultExpiryText of
-    Right n -> pure n
-    Left err -> die ("error: --default-expiry: " <> T.unpack err)
-
-  maxExpiry <- case parseDuration maxExpiryText of
-    Right n -> pure n
-    Left err -> die ("error: --max-expiry: " <> T.unpack err)
-
-  sweepInterval <- case parseDuration sweepText of
-    Right n | n >= 1 -> pure n
-    Right _ -> die "error: --sweep-interval must be at least 1s"
-    Left err -> die ("error: --sweep-interval: " <> T.unpack err)
-
-  maxUploadSize <- case parseByteCount maxUploadText of
-    Right n -> pure n
-    Left err -> die ("error: --max-upload-size: " <> T.unpack err)
-
-  iterations <- case parsePositiveInt (T.pack iterationsText) of
-    Right n | n >= 100000 && n <= 10000000 -> pure n
-    _ -> die "error: --password-hash-iterations must be between 100000 and 10000000"
+  port <- parseOrExit "port" (parsePositiveInt portText)
+  defaultExpiry <- parseOrExit "default-expiry" (parseDuration defaultExpiryText)
+  maxExpiry <- parseOrExit "max-expiry" (parseDuration maxExpiryText)
+  sweepInterval <- parseOrExit "sweep-interval" (parseDuration sweepText)
+  maxUploadSize <- parseOrExit "max-upload-size" (parseByteCount maxUploadText)
+  iterations <- parseOrExit "password-hash-iterations" (parsePositiveInt iterationsText)
 
   when (roNoTls raw && (isJust cert || isJust key)) $ do
-    hPutStrLn stderr "error: --no-tls cannot be combined with --tls-cert or --tls-key"
-    exitWith (ExitFailure 2)
+    exitWithText 2 "error: --no-tls cannot be combined with --tls-cert or --tls-key"
 
   tlsMode <- case (roNoTls raw, cert, key) of
     (True, _, _) -> pure TlsDisabled
@@ -224,13 +201,15 @@ parseServerConfig = do
       kExists <- doesFileExist k
       if cExists && kExists
         then pure (TlsEnabled c k)
-        else die "error: --tls-cert and --tls-key must both exist and be readable"
+        else exitWithText 1 "error: --tls-cert and --tls-key must both exist and be readable"
     (False, _, _) ->
-      die
+      exitWithText
+        1
         "error: TLS is enabled by default; supply --tls-cert and --tls-key, or use --no-tls for development"
 
   absoluteDataDir <- normalise <$> makeAbsolute dataDirText
-  let dbPath = case dbText of
+  let dbPath :: FilePath
+      dbPath = case dbText of
         Nothing -> absoluteDataDir </> "pigeon.db"
         Just p
           | isAbsolute p -> normalise p
@@ -239,14 +218,15 @@ parseServerConfig = do
   publicUrl <- case publicUrlText of
     Just url -> case normalizeBaseUrl url of
       Right normalized -> pure normalized
-      Left err -> die ("error: --public-url: " <> T.unpack err)
+      Left err -> exitWithText 1 ("error: --public-url: " <> err)
     Nothing -> do
-      let scheme = case tlsMode of
+      let scheme :: Text
+          scheme = case tlsMode of
             TlsDisabled -> "http"
             TlsEnabled{} -> "https"
-          url = T.pack scheme <> "://127.0.0.1:" <> T.pack (show port)
+          url = scheme <> "://127.0.0.1:" <> T.pack (show port)
       unless (isLoopback host) $
-        hPutStrLn
+        TIO.hPutStrLn
           stderr
           "warning: --public-url not set and --host is not loopback; share links may be wrong"
       pure url
@@ -269,25 +249,31 @@ parseServerConfig = do
         scVerbose = roVerbose raw
       }
  where
+  isLoopback :: String -> Bool
   isLoopback h = h `elem` ["127.0.0.1", "localhost", "::1", "0:0:0:0:0:0:0:1"]
+
+-- | Parse a command-line value or exit with a @1@ status naming the option.
+parseOrExit :: Text -> Either Text a -> IO a
+parseOrExit label =
+  either (\err -> exitWithText 1 ("error: --" <> label <> ": " <> err)) pure
 
 -- | Final cross-field validation shared by the parser and tests.
 validateServerConfig :: ServerConfig -> IO ServerConfig
 validateServerConfig cfg
   | scPort cfg < 1 || scPort cfg > 65535 =
-      die "error: port must be between 1 and 65535"
+      exitWithText 1 "error: port must be between 1 and 65535"
   | scDefaultExpiry cfg <= 0 =
-      die "error: default expiry must be greater than zero"
+      exitWithText 1 "error: default expiry must be greater than zero"
   | scMaxExpiry cfg <= 0 =
-      die "error: maximum expiry must be greater than zero"
+      exitWithText 1 "error: maximum expiry must be greater than zero"
   | scDefaultExpiry cfg > scMaxExpiry cfg =
-      die "error: default expiry must not exceed maximum expiry"
+      exitWithText 1 "error: default expiry must not exceed maximum expiry"
   | scSweepInterval cfg < 1 =
-      die "error: sweep interval must be at least 1s"
+      exitWithText 1 "error: sweep interval must be at least 1s"
   | scPasswordHashIterations cfg < 100000 || scPasswordHashIterations cfg > 10000000 =
-      die "error: password hash iterations must be between 100000 and 10000000"
+      exitWithText 1 "error: password hash iterations must be between 100000 and 10000000"
   | scMaxUploadSize cfg < 0 =
-      die "error: maximum upload size must not be negative"
+      exitWithText 1 "error: maximum upload size must not be negative"
   | T.null (unSecret (scToken cfg)) =
-      die "error: a token is required"
+      exitWithText 1 "error: a token is required"
   | otherwise = pure cfg

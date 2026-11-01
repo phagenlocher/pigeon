@@ -27,9 +27,9 @@ module Pigeon.Types (
   parseTimestamp,
   epochToUtc,
   utcToEpoch,
-  nowUtc,
 
   -- * Sanitisation and headers
+  lowerAsciiChar,
   sanitizeFilename,
   sanitizeContentType,
   contentDisposition,
@@ -45,7 +45,6 @@ import Data.Aeson
 import Data.Aeson.Types (Parser)
 import Data.ByteString (ByteString)
 import Data.ByteString qualified as BS
-import Data.ByteString.Char8 qualified as B8
 import Data.Char (isAscii, isAsciiLower, isAsciiUpper, isControl, isDigit, ord)
 import Data.Int (Int64)
 import Data.Text (Text)
@@ -55,14 +54,12 @@ import Data.Time (
   UTCTime,
   defaultTimeLocale,
   formatTime,
-  getCurrentTime,
   parseTimeM,
  )
 import Data.Time.Clock.POSIX (posixSecondsToUTCTime, utcTimeToPOSIXSeconds)
 import Data.ULID.Base32 qualified as Base32
 import Data.Word (Word8)
 import Servant.API (FromHttpApiData (..), ToHttpApiData (..))
-import Text.Printf (printf)
 
 -- | Pigeon's package version, reported by @\/healthz@ and @--version@.
 pigeonVersion :: Text
@@ -104,6 +101,7 @@ encodeFileId :: ByteString -> FileId
 encodeFileId bytes =
   FileId (T.toLower (Base32.encode 16 (BS.foldl' step (0 :: Integer) bytes)))
  where
+  step :: Integer -> Word8 -> Integer
   step acc w = acc * 256 + fromIntegral w
 
 -- | Generate a fresh id from ten cryptographically random bytes.
@@ -251,8 +249,15 @@ epochToUtc = posixSecondsToUTCTime . fromIntegral
 utcToEpoch :: UTCTime -> Int64
 utcToEpoch = floor . utcTimeToPOSIXSeconds
 
-nowUtc :: IO UTCTime
-nowUtc = getCurrentTime
+{- | Lowercase a single ASCII letter; other characters are unchanged.
+
+Used for case-insensitive HTTP header values such as @Content-Encoding@ and
+@Accept-Encoding@.
+-}
+lowerAsciiChar :: Char -> Char
+lowerAsciiChar c
+  | isAsciiUpper c = toEnum (fromEnum c + 32)
+  | otherwise = c
 
 {- | Make a user-supplied display filename safe.
 
@@ -267,19 +272,24 @@ sanitizeFilename input =
       truncated = truncateUtf8 255 trimmed
    in if T.null truncated || T.all (== '.') truncated then "file" else truncated
  where
+  replaceChar :: Char -> Char
   replaceChar c
     | c == '/' || c == '\\' || isControl c = '_'
     | otherwise = c
 
 -- | Truncate text so its UTF-8 encoding is at most @limit@ bytes.
 truncateUtf8 :: Int -> Text -> Text
-truncateUtf8 limit t = T.pack (go 0 (T.unpack t))
+truncateUtf8 limit t = T.take (fittingChars 0 t) t
  where
-  go _ [] = []
-  go used (c : cs)
-    | used + utf8Length c > limit = []
-    | otherwise = c : go (used + utf8Length c) cs
+  fittingChars :: Int -> Text -> Int
+  fittingChars used rest =
+    case T.uncons rest of
+      Nothing -> 0
+      Just (c, tailText)
+        | used + utf8Length c > limit -> 0
+        | otherwise -> 1 + fittingChars (used + utf8Length c) tailText
 
+  utf8Length :: Char -> Int
   utf8Length c
     | ord c <= 0x7f = 1
     | ord c <= 0x7ff = 2
@@ -294,22 +304,22 @@ sanitizeContentType t
   | not (T.all valid t) = "application/octet-stream"
   | otherwise = t
  where
+  valid :: Char -> Bool
   valid c = isAscii c && not (isControl c) && c /= '\r' && c /= '\n'
 
 -- | Build the value of a @Content-Disposition: attachment@ header.
 contentDisposition :: Text -> ByteString
 contentDisposition filename =
-  B8.pack
-    ( "attachment; filename=\""
-        <> T.unpack (asciiFallbackFilename filename)
-        <> "\"; filename*=UTF-8''"
-        <> T.unpack (percentEncodeRfc5987 filename)
-    )
+  "attachment; filename=\""
+    <> TE.encodeUtf8 (asciiFallbackFilename filename)
+    <> "\"; filename*=UTF-8''"
+    <> TE.encodeUtf8 (percentEncodeRfc5987 filename)
 
 -- | ASCII fallback used inside the quoted @filename@ parameter.
 asciiFallbackFilename :: Text -> Text
 asciiFallbackFilename = T.map replace
  where
+  replace :: Char -> Char
   replace c
     | isAscii c && c /= '"' && c /= '\\' && not (isControl c) = c
     | otherwise = '_'
@@ -318,14 +328,26 @@ asciiFallbackFilename = T.map replace
 percentEncodeRfc5987 :: Text -> Text
 percentEncodeRfc5987 = T.concatMap encodeChar
  where
+  encodeChar :: Char -> Text
   encodeChar c
     | isAttrChar c = T.singleton c
     | otherwise =
-        T.concat (map encodeByte (BS.unpack (TE.encodeUtf8 (T.singleton c))))
+        T.concatMap
+          (encodeByte . fromIntegral . ord)
+          (TE.decodeLatin1 (TE.encodeUtf8 (T.singleton c)))
 
   encodeByte :: Word8 -> Text
-  encodeByte w = T.pack (printf "%%%02X" w)
+  encodeByte w =
+    T.singleton '%'
+      <> T.singleton (hexDigit (w `div` 16))
+      <> T.singleton (hexDigit (w `mod` 16))
 
+  hexDigit :: Word8 -> Char
+  hexDigit n
+    | n < 10 = toEnum (fromEnum '0' + fromIntegral n)
+    | otherwise = toEnum (fromEnum 'A' + fromIntegral n - 10)
+
+  isAttrChar :: Char -> Bool
   isAttrChar c =
     isAsciiUpper c
       || isAsciiLower c

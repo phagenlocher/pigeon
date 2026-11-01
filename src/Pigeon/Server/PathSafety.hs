@@ -175,10 +175,12 @@ ensureDirectoryTree privateFinal strictParents path = do
     )
     `onException` closeFd fd
  where
+  ensureComponents :: FilePath -> IO ()
   ensureComponents absolute = do
     let prefixes = scanl1 (</>) (splitDirectories absolute)
     mapM_ (ensureComponent absolute) prefixes
 
+  ensureComponent :: FilePath -> FilePath -> IO ()
   ensureComponent absolute prefix = do
     status <- statusOrCreate prefix
     if isSymbolicLink status
@@ -189,6 +191,7 @@ ensureDirectoryTree privateFinal strictParents path = do
     when (prefix /= absolute) $
       ensureTrustedParent prefix status
 
+  statusOrCreate :: FilePath -> IO FileStatus
   statusOrCreate prefix = do
     result <- try (getSymbolicLinkStatus prefix) :: IO (Either IOException FileStatus)
     case result of

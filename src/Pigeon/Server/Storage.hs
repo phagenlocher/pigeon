@@ -15,10 +15,10 @@ module Pigeon.Server.Storage (
   listBlobIds,
   listTempFiles,
   removeIfExists,
-  renderStorageError,
 ) where
 
 import Control.Exception.Safe (
+  Exception,
   IOException,
   SomeException,
   bracket,
@@ -33,14 +33,13 @@ import Crypto.Random (getRandomBytes)
 import Data.ByteString (ByteString)
 import Data.ByteString qualified as BS
 import Data.ByteString.Char8 qualified as B8
-import Data.Char (isAsciiUpper)
 import Data.Conduit
 import Data.Conduit.Combinators (sinkHandle, sinkNull)
 import Data.Conduit.Internal (zipSinks)
 import Data.IORef
 import Data.Int (Int64)
 import Data.List (isSuffixOf)
-import Data.Maybe (isJust)
+import Data.Streaming.Zlib (ZlibException)
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Time (UTCTime, addUTCTime, getCurrentTime)
@@ -86,7 +85,13 @@ import Pigeon.Streaming (
   gzipConduit,
   ungzipConduit,
  )
-import Pigeon.Types (FileId (..), StoredFile (..), generateFileId, mkFileId)
+import Pigeon.Types (
+  FileId (..),
+  StoredFile (..),
+  generateFileId,
+  lowerAsciiChar,
+  mkFileId,
+ )
 
 {- | Outcome of synchronising a directory. Only a filesystem that explicitly
 reports that directory fsync is unsupported yields 'DirSyncUnsupported'
@@ -150,16 +155,12 @@ data StorageError
   | StorageBadGzip
   | StorageIdCollision
   | StorageIo Text
-  | StorageCorrupt Text
   deriving (Eq, Show)
 
-renderStorageError :: StorageError -> Text
-renderStorageError = \case
-  StorageTooLarge -> "upload is too large"
-  StorageBadGzip -> "request body is not valid gzip"
-  StorageIdCollision -> "could not allocate a unique file id"
-  StorageIo _ -> "storage failure"
-  StorageCorrupt _ -> "storage corruption"
+{- | Allow the upload pipeline to carry a typed storage failure through
+'doStore' without losing it to the generic exception classifier.
+-}
+instance Exception StorageError
 
 {- | Create the data directory and its subdirectories, and verify that
 @files/@ and @tmp/@ live on the same filesystem. Symlink components are
@@ -228,10 +229,12 @@ clampCreatedAt now expiresAt =
 
 classify :: SomeException -> StorageError
 classify err
-  | isJust (fromException err :: Maybe UploadTooLarge) = StorageTooLarge
-  | isJust (fromException err :: Maybe IOException) = StorageIo "filesystem error"
-  | isJust (fromException err :: Maybe SQLError) = StorageIo "database error"
-  | otherwise = StorageBadGzip
+  | Just (storageError :: StorageError) <- fromException err = storageError
+  | Just (_ :: UploadTooLarge) <- fromException err = StorageTooLarge
+  | Just (_ :: ZlibException) <- fromException err = StorageBadGzip
+  | Just (_ :: IOException) <- fromException err = StorageIo "filesystem error"
+  | Just (_ :: SQLError) <- fromException err = StorageIo "database error"
+  | otherwise = StorageIo "unexpected storage failure"
 
 {- | Write, validate, sync, and rename one upload before its metadata row is
 committed.
@@ -271,7 +274,8 @@ doStore storage db StoreRequest{..} createdAt = do
         DirSyncSucceeded -> pure ()
         DirSyncUnsupported -> warnUnsupportedDirSync storage
 
-      let stored =
+      let stored :: StoredFile
+          stored =
             StoredFile
               { sfId = fileId,
                 sfFilename = srFilename,
@@ -292,11 +296,8 @@ doStore storage db StoreRequest{..} createdAt = do
       logUploadIoFailure storage fileId err
       throwIO err
  where
-  contentEncoding = fmap (B8.map lowerAscii) srContentEncoding
-
-  lowerAscii c
-    | isAsciiUpper c = toEnum (fromEnum c + 32)
-    | otherwise = c
+  contentEncoding :: Maybe ByteString
+  contentEncoding = fmap (B8.map lowerAsciiChar) srContentEncoding
 
 -- | Emit the unsupported-directory-fsync warning at most once per process.
 warnUnsupportedDirSync :: Storage -> IO ()
@@ -333,6 +334,7 @@ removeOrphanBlob storage fileId =
   ignoreHookErrors
     (shRemoveBlob (stHooks storage) (blobPath storage fileId) `catch` handleFailure)
  where
+  handleFailure :: IOException -> IO ()
   handleFailure err
     | isDoesNotExistError err = pure ()
     | otherwise =
@@ -381,7 +383,8 @@ writeGzipBody body temp limit storedRef originalRef =
 pickFreshId :: Db -> IO FileId
 pickFreshId db = go (5 :: Int)
  where
-  go 0 = throwIO (userError "could not allocate a unique file id")
+  go :: Int -> IO FileId
+  go 0 = throwIO StorageIdCollision
   go attempts = do
     candidate <- generateFileId
     existing <- lookupFile db candidate
