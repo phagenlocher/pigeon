@@ -56,6 +56,7 @@ import Pigeon.Client.Config (
   PasswordSource (..),
   UploadOptions (..),
  )
+import Pigeon.Client.Output (estimateEta, formatEta)
 import Pigeon.Duration
 import Pigeon.Password
 import Pigeon.Server.Config (ServerConfig (..))
@@ -95,6 +96,26 @@ main = hspec $ do
       property $ \(Positive n :: Positive Int) ->
         let seconds = fromIntegral (n `mod` 1000000 + 1) :: Int64
          in parseDuration (formatDuration seconds) == Right seconds
+
+  describe "upload ETA" $ do
+    it "is unavailable until a stable estimate is possible" $ do
+      estimateEta 1000 0 10 `shouldBe` Nothing
+      estimateEta 0 100 10 `shouldBe` Nothing
+      estimateEta 1000 100 0.25 `shouldBe` Nothing
+    it "extrapolates from the average throughput" $ do
+      estimateEta 1000 500 5 `shouldBe` Just 5
+      estimateEta 1000 250 5 `shouldBe` Just 15
+    it "rounds partial seconds up so zero means complete" $
+      estimateEta 1000 999 10 `shouldBe` Just 1
+    it "reports zero once every byte has been counted" $
+      estimateEta 1000 1000 0.1 `shouldBe` Just 0
+    it "formats seconds, minutes, and hours" $ do
+      formatEta 0 `shouldBe` "0s"
+      formatEta 45 `shouldBe` "45s"
+      formatEta 60 `shouldBe` "1m 00s"
+      formatEta 125 `shouldBe` "2m 05s"
+      formatEta 3600 `shouldBe` "1h 00m"
+      formatEta 3905 `shouldBe` "1h 05m"
 
   describe "filename and content-type sanitisation" $ do
     it "removes path separators and control characters" $ do

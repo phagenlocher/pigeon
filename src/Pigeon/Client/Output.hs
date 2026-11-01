@@ -2,6 +2,8 @@
 module Pigeon.Client.Output (
   formatSize,
   formatUtc,
+  estimateEta,
+  formatEta,
   formatFileInfo,
   formatFileTable,
   truncateName,
@@ -30,6 +32,50 @@ formatSize bytes
   oneDecimal value =
     let rounded = fromIntegral (round (value * 10) :: Int) / 10 :: Double
      in T.pack (show rounded)
+
+{- | Minimum elapsed seconds before an ETA is considered stable enough to show.
+
+The first redraws of a fast local upload would otherwise extrapolate from a
+tiny sample and display a wildly wrong estimate.
+-}
+minimumEtaElapsedSeconds :: Double
+minimumEtaElapsedSeconds = 0.5
+
+{- | Estimate the remaining upload time in seconds from the average throughput
+since the transfer started.
+
+Returns 'Nothing' while no estimate is possible: no bytes have been counted,
+the size is unknown, or less than 'minimumEtaElapsedSeconds' has elapsed.
+Returns @Just 0@ once every byte has been counted.
+-}
+estimateEta :: Int64 -> Int64 -> Double -> Maybe Int64
+estimateEta total current elapsedSeconds
+  | total <= 0 = Nothing
+  | current <= 0 = Nothing
+  | current >= total = Just 0
+  | elapsedSeconds < minimumEtaElapsedSeconds = Nothing
+  | otherwise =
+      let rate :: Double
+          rate = fromIntegral current / elapsedSeconds
+          remaining :: Double
+          remaining = fromIntegral (total - current)
+       in Just (max 0 (ceiling (remaining / rate)))
+
+-- | Format a remaining-time estimate: @45s@, @1m 05s@, or @1h 05m@.
+formatEta :: Int64 -> Text
+formatEta seconds
+  | seconds < 60 = T.pack (show (max 0 seconds)) <> "s"
+  | seconds < 3600 =
+      let (minutes, rest) = seconds `divMod` 60
+       in T.pack (show minutes) <> "m " <> twoDigits rest <> "s"
+  | otherwise =
+      let (hours, rest) = seconds `divMod` 3600
+          minutes = rest `div` 60
+       in T.pack (show hours) <> "h " <> twoDigits minutes <> "m"
+ where
+  twoDigits :: Int64 -> Text
+  twoDigits value =
+    (if value < 10 then "0" else "") <> T.pack (show value)
 
 -- | UTC timestamp in CLI form.
 formatUtc :: UTCTime -> Text

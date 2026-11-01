@@ -55,6 +55,8 @@ import Pigeon.Client.Config (
  )
 import Pigeon.Client.Output (
   deleteResultJson,
+  estimateEta,
+  formatEta,
   formatFileInfo,
   formatFileTable,
   formatSize,
@@ -430,30 +432,38 @@ progressConduit ::
   Bool -> Text -> Int64 -> IORef Int64 -> ConduitT BS.ByteString BS.ByteString (ResourceT IO) ()
 progressConduit enabled filename total counter
   | not enabled = awaitForever yield
-  | otherwise = go (epochToUtc 0)
+  | otherwise = do
+      started <- liftIO getCurrentTime
+      go started (epochToUtc 0)
  where
-  go :: UTCTime -> ConduitT BS.ByteString BS.ByteString (ResourceT IO) ()
-  go lastPrint =
+  go :: UTCTime -> UTCTime -> ConduitT BS.ByteString BS.ByteString (ResourceT IO) ()
+  go started lastPrint =
     await >>= \case
       Nothing -> pure ()
       Just chunk -> do
         now <- liftIO getCurrentTime
         let elapsed :: Double
-            elapsed = realToFrac $ diffUTCTime now lastPrint
+            elapsed = realToFrac (diffUTCTime now lastPrint)
+            elapsedTotal :: Double
+            elapsedTotal = realToFrac (diffUTCTime now started)
             shouldPrintProgress :: Bool
             shouldPrintProgress = elapsed * 1000 >= progressIntervalMs
         when shouldPrintProgress $ do
           current <- liftIO (readIORef counter)
-          liftIO (printProgress filename total current)
+          liftIO (printProgress filename total current elapsedTotal)
         yield chunk
-        go (if shouldPrintProgress then now else lastPrint)
+        go started (if shouldPrintProgress then now else lastPrint)
 
-printProgress :: Text -> Int64 -> Int64 -> IO ()
-printProgress filename total current = do
+printProgress :: Text -> Int64 -> Int64 -> Double -> IO ()
+printProgress filename total current elapsedSeconds = do
   let percentage :: Int
       percentage
         | total <= 0 = 100
         | otherwise = min 100 (fromIntegral ((current * 100) `div` total))
+      eta :: Text
+      eta = case estimateEta total current elapsedSeconds of
+        Nothing -> ""
+        Just seconds -> ", ETA " <> formatEta seconds
       detail :: Text
       detail
         | total <= 0 = formatSize current
@@ -463,7 +473,9 @@ printProgress filename total current = do
               <> formatSize total
               <> " ("
               <> T.pack (show percentage)
-              <> "%)"
+              <> "%"
+              <> eta
+              <> ")"
   TIO.hPutStr stderr (eraseLine <> "Uploading " <> filename <> ": " <> detail)
   hFlush stderr
 
