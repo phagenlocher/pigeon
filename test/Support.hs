@@ -13,6 +13,7 @@ module Support (
   authHeader,
   uploadRaw,
   uploadGzip,
+  uploadGzipRaw,
   uploadWithPassword,
   uploadWithExpires,
   uploadWithExpiresEither,
@@ -56,7 +57,7 @@ import Network.HTTP.Client (
   responseStatus,
   responseTimeoutMicro,
  )
-import Network.HTTP.Types (Header, Method, Status)
+import Network.HTTP.Types (Header, Method, Status, hAcceptEncoding)
 import Network.HTTP.Types qualified as HTTP
 import Network.Wai.Handler.Warp qualified as Warp
 import Servant.API ((:<|>) (..))
@@ -165,6 +166,18 @@ uploadGzip env filename bytes =
       )
       env
 
+{- | Send an already-compressed body with @Content-Encoding: gzip@.
+
+Unlike 'uploadGzip', the bytes are not compressed again, so callers can send a
+specific gzip stream, including a deliberately corrupt one.
+-}
+uploadGzipRaw :: ClientEnv -> Text -> ByteString -> IO FileInfo
+uploadGzipRaw env filename bytes =
+  expectRight
+    =<< runClientM
+      (uploadCall (Just authHeader) (Just filename) Nothing Nothing (Just "gzip") Nothing (yield bytes))
+      env
+
 uploadWithExpires :: ClientEnv -> Text -> Int64 -> ByteString -> IO FileInfo
 uploadWithExpires env filename expires bytes =
   expectRight
@@ -254,19 +267,33 @@ postForm port fileId =
     "POST"
     [("Content-Type", "application/x-www-form-urlencoded")]
 
+{- | Send one raw HTTP request with a strict body.
+
+The helper defaults @Accept-Encoding@ to @identity@, because http-client adds
+@gzip@ when the header is absent, and disables http-client's transparent
+decompression. A gzip passthrough body is therefore returned byte-exact unless
+the caller asks for gzip and decodes it itself.
+-}
 requestWith ::
   Warp.Port -> String -> Method -> [Header] -> ByteString -> IO (Response LBS.ByteString)
 requestWith port path method headers body = do
   manager <- newManager defaultManagerSettings
   request <- parseRequest ("http://127.0.0.1:" <> show port <> path)
-  let request' :: Request
-      request' =
-        request
-          { method = method,
-            requestHeaders = headers,
-            requestBody = RequestBodyBS body,
-            redirectCount = 0
-          }
+  let
+    headers' :: [Header]
+    headers' =
+      if any ((== hAcceptEncoding) . fst) headers
+        then headers
+        else (hAcceptEncoding, "identity") : headers
+    request' :: Request
+    request' =
+      request
+        { method = method,
+          requestHeaders = headers',
+          requestBody = RequestBodyBS body,
+          redirectCount = 0,
+          decompress = const False
+        }
   httpLbs request' manager
 
 bodyOf :: Response LBS.ByteString -> LBS.ByteString

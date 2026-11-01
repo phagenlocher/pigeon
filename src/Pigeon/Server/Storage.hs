@@ -82,7 +82,7 @@ import Pigeon.Server.PathSafety (
 import Pigeon.Streaming (
   UploadTooLarge (..),
   countBytesLimited,
-  gzipConduit,
+  parallelGzipConduit,
   ungzipConduit,
  )
 import Pigeon.Types (
@@ -357,7 +357,7 @@ writeIdentityBody body temp limit originalRef =
     runConduitRes $
       body
         .| countBytesLimited limit originalRef
-        .| gzipConduit
+        .| parallelGzipConduit
         .| sinkHandle handle
 
 {- | Write a gzip upload as received while validating the stream and counting

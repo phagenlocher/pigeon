@@ -1,7 +1,13 @@
+{-# LANGUAGE ForeignFunctionInterface #-}
+
 -- | Streaming helpers: gzip, counting, and @Accept-Encoding@ negotiation.
 module Pigeon.Streaming (
   sourceHandleChunked,
   gzipConduit,
+  parallelGzipConduit,
+  parallelGzipConduitWith,
+  gzipBlockSize,
+  maxGzipWorkers,
   ungzipConduit,
   passThrough,
   countBytes,
@@ -12,19 +18,37 @@ module Pigeon.Streaming (
 )
 where
 
-import Control.Monad (when)
+import Control.Concurrent (getNumCapabilities)
+import Control.Concurrent.Async (mapConcurrently)
+import Control.Monad (foldM, when)
 import Control.Monad.Catch (Exception, MonadThrow, throwM)
 import Control.Monad.IO.Class (liftIO)
 import Control.Monad.Primitive (PrimMonad)
 import Control.Monad.Trans.Resource (ResourceT)
+import Data.Bits (shiftR)
 import Data.ByteString (ByteString)
 import Data.ByteString qualified as BS
 import Data.ByteString.Char8 qualified as B8
+import Data.ByteString.Unsafe (unsafeUseAsCStringLen)
 import Data.Conduit
+import Data.Conduit.Combinators (chunksOfE)
 import Data.Conduit.Zlib (gzip, ungzip)
 import Data.IORef
 import Data.Int (Int64)
 import Data.Maybe (fromMaybe, mapMaybe)
+import Data.Streaming.Zlib (
+  Deflate,
+  Popper,
+  PopperRes (..),
+  WindowBits (..),
+  feedDeflate,
+  finishDeflate,
+  fullFlushDeflate,
+  initDeflate,
+ )
+import Data.Word (Word32, Word8)
+import Foreign.C.Types (CUInt (..), CULong (..))
+import Foreign.Ptr (Ptr, castPtr)
 import System.IO (Handle)
 
 import Pigeon.Types (lowerAsciiChar)
@@ -33,7 +57,147 @@ import Pigeon.Types (lowerAsciiChar)
 gzipConduit :: (MonadThrow m, PrimMonad m) => ConduitT ByteString ByteString m ()
 gzipConduit = gzip
 
--- | Streaming gzip decompression.
+{- | Size of each independently compressed block, in bytes.
+
+Block boundaries reset the deflate window, so the compression-ratio loss is
+bounded by the 32 KiB window and is negligible at this size. The blocks are
+stitched into one gzip stream, so the wire format stays a single member.
+-}
+gzipBlockSize :: Int
+gzipBlockSize = 1024 * 1024
+
+-- | Upper bound on compression workers, regardless of the capability count.
+maxGzipWorkers :: Int
+maxGzipWorkers = 8
+
+{- | Block-parallel gzip: compress independent blocks concurrently and emit one
+standard gzip stream.
+
+Workers are bounded by 'maxGzipWorkers' and the capability count. With a
+single capability the stream falls back to 'gzipConduit', so small files are
+not delayed by block buffering. An empty input still produces a valid empty
+gzip stream, matching the streaming compressor.
+
+Memory is bounded by @2 * workers * 'gzipBlockSize'@ per active stream. An
+exception in one worker cancels the others and propagates to the caller.
+-}
+parallelGzipConduit :: ConduitT ByteString ByteString (ResourceT IO) ()
+parallelGzipConduit = do
+  capabilities <- liftIO getNumCapabilities
+  parallelGzipConduitWith (max 1 (min maxGzipWorkers capabilities))
+
+{- | Block-parallel gzip with an explicit worker count.
+
+A count of one or less uses 'gzipConduit', preserving the streaming behaviour.
+A greater count compresses blocks concurrently and stitches the raw deflate
+segments into a single gzip member with one header, one trailer, and a final
+empty block. Callers that already bound concurrency, and tests, pass an
+explicit value instead of using the capability-derived default.
+-}
+parallelGzipConduitWith :: Int -> ConduitT ByteString ByteString (ResourceT IO) ()
+parallelGzipConduitWith workers
+  | workers <= 1 = gzipConduit
+  | otherwise = do
+      yield gzipHeader
+      chunksOfE gzipBlockSize .| compressBatches
+ where
+  compressBatches :: ConduitT ByteString ByteString (ResourceT IO) ()
+  compressBatches = go 0 0
+   where
+    go :: Word32 -> Word32 -> ConduitT ByteString ByteString (ResourceT IO) ()
+    go crc total = do
+      blocks <- collectBlocks workers
+      case blocks of
+        [] -> do
+          terminator <- liftIO finishEmptyBlock
+          yield terminator
+          yield (gzipTrailer crc total)
+        _ -> do
+          crc' <- liftIO (foldM crc32Chunk crc blocks)
+          let total' :: Word32
+              total' = total + fromIntegral (sum (map BS.length blocks))
+          compressed <- liftIO (mapConcurrently compressBlockRaw blocks)
+          mapM_ yield compressed
+          total' `seq` go crc' total'
+
+  collectBlocks :: Int -> ConduitT ByteString ByteString (ResourceT IO) [ByteString]
+  collectBlocks 0 = pure []
+  collectBlocks n =
+    await >>= \case
+      Nothing -> pure []
+      Just block -> (block :) <$> collectBlocks (n - 1)
+
+{- | Update a CRC-32 with one chunk.
+
+zlib's @crc32@ starts from zero and performs its own pre- and post-conditioning,
+so the result is the standard IEEE CRC-32 used by gzip. A zero initial value
+therefore produces the correct gzip trailer value.
+-}
+crc32Chunk :: Word32 -> ByteString -> IO Word32
+crc32Chunk crc chunk =
+  unsafeUseAsCStringLen chunk $ \(pointer, byteCount) ->
+    fromIntegral
+      <$> c_crc32
+        (fromIntegral crc)
+        (castPtr pointer)
+        (fromIntegral byteCount)
+
+-- | zlib's incremental CRC-32, used to build the single gzip trailer.
+foreign import ccall unsafe "crc32"
+  c_crc32 :: CULong -> Ptr Word8 -> CUInt -> IO CULong
+
+-- | The fixed 10-byte gzip header: no name, no modification time, unknown OS.
+gzipHeader :: ByteString
+gzipHeader = BS.pack [0x1f, 0x8b, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xff]
+
+-- | Encode a 32-bit word little-endian, as the gzip trailer requires.
+word32LE :: Word32 -> ByteString
+word32LE word =
+  BS.pack
+    [ fromIntegral word,
+      fromIntegral (word `shiftR` 8),
+      fromIntegral (word `shiftR` 16),
+      fromIntegral (word `shiftR` 24)
+    ]
+
+-- | The 8-byte gzip trailer: CRC-32 and ISIZE, both little-endian.
+gzipTrailer :: Word32 -> Word32 -> ByteString
+gzipTrailer crc size = word32LE crc <> word32LE size
+
+-- | Drain a zlib popper into a list of chunks, propagating zlib errors.
+drainPopper :: Popper -> IO [ByteString]
+drainPopper popper = go
+ where
+  go :: IO [ByteString]
+  go =
+    popper >>= \case
+      PRDone -> pure []
+      PRNext chunk -> (chunk :) <$> go
+      PRError err -> throwM err
+
+{- | Compress one block as a raw deflate segment ending with a full flush.
+
+@Z_FULL_FLUSH@ resets the dictionary and ends on a byte boundary, so segments
+compressed by different workers can be concatenated into one deflate stream.
+-}
+compressBlockRaw :: ByteString -> IO ByteString
+compressBlockRaw block = do
+  deflater <- newDeflater
+  fed <- drainPopper =<< feedDeflate deflater block
+  flushed <- drainPopper (fullFlushDeflate deflater)
+  pure (BS.concat (fed <> flushed))
+
+-- | The empty final deflate block that terminates a stitched stream.
+finishEmptyBlock :: IO ByteString
+finishEmptyBlock = do
+  deflater <- newDeflater
+  BS.concat <$> drainPopper (finishDeflate deflater)
+
+-- | A raw deflate stream (no zlib or gzip wrapper) at the default level.
+newDeflater :: IO Deflate
+newDeflater = initDeflate 6 (WindowBits (-15))
+
+-- | Streaming gzip decompression of one member.
 ungzipConduit :: (MonadThrow m, PrimMonad m) => ConduitT ByteString ByteString m ()
 ungzipConduit = ungzip
 

@@ -58,7 +58,7 @@ import Pigeon.Client.Output (
   formatSize,
  )
 import Pigeon.Password (validatePassword)
-import Pigeon.Streaming (countBytes, gzipConduit, passThrough, sourceHandleChunked)
+import Pigeon.Streaming (countBytes, parallelGzipConduit, passThrough, sourceHandleChunked)
 import Pigeon.Types (
   ApiError (..),
   ApiErrorEnvelope (..),
@@ -157,7 +157,7 @@ performUpload cfg clientApi options filename contentType compression passwordHea
         sourceHandleChunked uploadChunkSize handle
           .| countBytes counter
           .| progressConduit showProgress filename totalSize counter
-          .| (if uoNoCompress options then passThrough else gzipConduit)
+          .| (if uoNoCompress options then passThrough else parallelGzipConduit)
   result <-
     runApi
       clientApi
