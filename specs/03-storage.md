@@ -163,7 +163,8 @@ data StoreRequest = StoreRequest
    - If `max_upload_size > 0` and the decompressed byte count exceeds it, abort with `payload_too_large`.
    - The decompressed count is `size_original`.
 4. **STORE-063** If `srContentEncoding` is absent or `identity`:
-   - Stream the request body through a counter, then through `gzip` (level 6), then into the temp file.
+   - Stream the request body through a counter, then through `parallelGzipConduit` (level 6), then into the temp file.
+   - `parallelGzipConduit` compresses 1 MiB blocks concurrently and stitches the raw deflate segments into one gzip stream with a single header, a final empty block, and one trailer. See STORE-074.
    - Count original bytes before compression.
    - Enforce `max_upload_size` against original bytes while streaming.
    - After the body ends, `size_stored` is the temp file size.
@@ -181,6 +182,10 @@ If any step before the rename fails, remove the temp file. If the insert fails a
 The client sends compressed bytes. The server must know the original size for listing and for the upload-size policy. The gzip trailer's `ISIZE` field is only 32-bit and is not reliable for files larger than 4 GiB, and it does not prove that the stream is intact. A single streaming decompression pass is therefore still required.
 
 That pass runs while the bytes are written, not after them: each received chunk is stored exactly as received and, in the same iteration, fed to `ungzip` and counted. This keeps memory constant, validates the stream and computes `size_original` without a second read of the temp file, overlaps decompression with the network transfer, and rejects a corrupt stream early. The tradeoff is that the decompression cost sits on the receive path instead of after it; the total CPU work is unchanged.
+
+For identity uploads the server compresses at rest. `parallelGzipConduit` splits the input into 1 MiB blocks and compresses them concurrently with raw deflate streams, each ending in `Z_FULL_FLUSH`. A full flush resets the dictionary and ends on a byte boundary, so the segments can be concatenated into one deflate stream. The conduit writes one gzip header, the segments in input order, a final empty deflate block, and one trailer whose CRC-32 and ISIZE cover the whole uncompressed input (CRC-32 comes from zlib through a small FFI binding). The result is a normal **single-member** gzip stream: decoders that stop after the first member, including zlib-based HTTP clients, still read the whole file. The 32 KiB window is reset at each block boundary, so the compression-ratio loss is negligible at 1 MiB blocks.
+
+- **STORE-074** Server-produced gzip is one member, never concatenated members. `size_stored` is the total blob size; `size_original` is the total uncompressed byte count before compression. Block-parallel compression must not change the gzip contract or require a multi-member-capable decoder.
 
 ### 7.4 Size limits
 
