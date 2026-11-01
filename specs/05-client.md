@@ -135,9 +135,9 @@ pigeon-client [GLOBAL] upload FILE
 
 ### 4.3 Upload pipeline
 
-- **CLI-070** Open the file with `withBinaryFile path ReadMode` and use `sourceHandle` inside a `ConduitT () ByteString (ResourceT IO) ()`.
+- **CLI-070** Open the file with `withBinaryFile path ReadMode` and use `sourceHandleChunked` with 128 KiB reads inside a `ConduitT () ByteString (ResourceT IO) ()`.
 - **CLI-071** Count original bytes before compression, so progress and `size` reflect the local file.
-- **CLI-072** If compression is enabled, pipe the stream through `gzipConduit` and set `Content-Encoding: gzip`.
+- **CLI-072** If compression is enabled, pipe the stream through `parallelGzipConduit` and set `Content-Encoding: gzip`. It compresses 1 MiB blocks concurrently and emits one standard gzip stream (one header and trailer), never concatenated members. Progress and `size` are counted before compression.
 - **CLI-073** If `--no-compress`, send identity and do not set `Content-Encoding`.
 - **CLI-074** Send `filename`, `expires_in` (only if supplied), and `content_type` as query parameters, properly URL-encoded.
 - **CLI-075** Send the body via the Servant `StreamBody` endpoint. Do not read the whole file first.

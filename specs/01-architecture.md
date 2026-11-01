@@ -119,7 +119,12 @@ sourceHandleChunked :: Int -> Handle -> ConduitT i ByteString (ResourceT IO) ()
 -- Reads up to the given number of bytes per chunk from a Handle.
 
 gzipConduit :: ConduitT ByteString ByteString (ResourceT IO) ()
+parallelGzipConduit :: ConduitT ByteString ByteString (ResourceT IO) ()
 ungzipConduit :: ConduitT ByteString ByteString (ResourceT IO) ()
+
+-- parallelGzipConduit compresses 1 MiB blocks concurrently and stitches the
+-- raw deflate segments into one standard gzip stream (one header and trailer).
+-- The output is a single-member gzip stream, not concatenated members.
 
 countBytes :: IORef Int64 -> ConduitT ByteString ByteString (ResourceT IO) ()
 -- Increments the ref for every chunk and passes the chunk through unchanged.
@@ -131,6 +136,17 @@ parseAcceptEncoding :: ByteString -> AcceptEncoding
 
 Use `Data.Conduit.Zlib` (`gzip`, `ungzip`) from `conduit-extra`. Do not use lazy `Codec.Compression.GZip` on file content.
 
+`parallelGzipConduit` uses raw deflate streams from `Data.Streaming.Zlib`
+(`initDeflate`, `feedDeflate`, `fullFlushDeflate`, `finishDeflate`) and zlib's
+CRC-32 through a small FFI binding. A full flush resets the dictionary and ends
+each segment on a byte boundary, so independent segments can be concatenated
+into one deflate stream. The conduit emits a single gzip header, the segments
+in input order, a final empty deflate block, and one gzip trailer (CRC-32 and
+ISIZE). This keeps the wire and on-disk format a normal single-member gzip
+stream that every decoder accepts.
+
+The FFI binding links against the system zlib (`libz`) directly. `pigeon.cabal` declares this with `extra-libraries: z`, making the C library an explicit build-time and run-time requirement; Pigeon does not depend on the Haskell `zlib` package.
+
 ## 5. Upload data flow
 
 ```
@@ -139,7 +155,7 @@ client file
   ▼
 countBytes (original size + progress)
   │
-  ├─ compression enabled? ── yes ──▶ gzipConduit ──▶ Content-Encoding: gzip
+  ├─ compression enabled? ── yes ──▶ parallelGzipConduit ──▶ Content-Encoding: gzip
   │                        └ no  ──▶ identity
   ▼
 HTTP request body (chunked)
@@ -154,7 +170,7 @@ server handler
   │                              └─ same pass: ungzip + count original
   │                                 (validates gzip, computes size_original)
   │
-  └─ identity ─────────────────▶ countBytes + gzipConduit + sinkFile temp
+  └─ identity ─────────────────▶ countBytes + parallelGzipConduit + sinkFile temp
   ▼
 temp file is gzip; fsync temp; rename to files/<id>.gz; fsync files/
   ▼
@@ -193,7 +209,7 @@ The file handle is opened only after the DB row is fetched and the lock is relea
 - The sweeper is a single background thread. It performs a short delete transaction, then unlinks blobs outside the lock.
 - Request handlers never wait for the sweeper.
 - `MVar` contention is acceptable because the service is low-throughput and SQLite serializes writes anyway.
-- **ARCH-015** Both executables are linked with the default RTS options `-N -A16m`. The threaded RTS therefore uses every available capability, so concurrent compression, decompression, and TLS work is not serialized on one core, and each capability gets a 16 MiB allocation area to reduce minor-GC frequency on streaming paths. A single upload or download still runs on one capability. Operators may override the defaults with `+RTS`, for example `+RTS -N2` in a CPU-quota-limited container or `+RTS -A4m` to reduce resident memory.
+- **ARCH-015** `pigeon-server` is linked with `-N -A16m`, so the threaded RTS uses every available capability and concurrent compression, decompression, and TLS work is not serialized on one core. `pigeon-client` is linked with `-N8 -A4m` and adjusts its capability count at runtime: compressed uploads keep up to eight block-parallel gzip workers (capped by the processor count), while identity uploads and the metadata commands use two capabilities. The 4 MiB allocation area is large enough for eight 1 MiB gzip workers without thrashing the nursery. A single upload uses up to eight capabilities for block-parallel gzip on the server; a single download remains one capability (gzip passthrough is I/O-bound, and identity responses decompress sequentially). Operators may override the defaults with `+RTS`, for example `+RTS -N2` in a CPU-quota-limited container, `+RTS -N1` to force single-stream compression, or `+RTS -A16m` for a larger nursery.
 
 ## 8. Server startup and shutdown order
 
@@ -272,6 +288,12 @@ allow-newer: serialise:base, cborg:base
 
 - **ARCH-020** `cabal.project` pins `tls`, `tls-session-manager`, and `crypton-connection` as above so `password` and `warp-tls` resolve against one `crypton` generation.
 - **ARCH-021** If a future `password` release supports `crypton >= 2.1`, update this section and remove the pins in the same change.
+
+### 9.2 System zlib
+
+`Pigeon.Streaming` calls zlib's C `crc32` through FFI rather than through a Haskell binding, so the linker needs the system zlib (`libz`). The `library` stanza declares `extra-libraries: z`; this makes the C library an explicit build-time and run-time requirement and stops the build from depending on a transitive package's `extra-libraries`. The Haskell `zlib` package is not a Pigeon dependency.
+
+- **ARCH-022** `pigeon.cabal` declares `extra-libraries: z` on the `library` stanza. Do not re-add the Haskell `zlib` package in its place, and do not remove `extra-libraries: z` while `Pigeon.Streaming` calls `crc32`.
 
 ## 10. Package layout
 

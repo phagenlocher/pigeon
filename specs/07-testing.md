@@ -290,6 +290,12 @@ Run the built `pigeon-client` against a test server. Use `readProcessWithExitCod
 - **TEST-255** Manual: 1 GiB gzip upload from a precompressed stream; verify single-pass validation computes the correct original size with bounded memory.
 - **TEST-256** Interrupt a large download mid-stream; the server stays healthy and the temp/blob state is unchanged.
 - **TEST-257** Interrupt a large upload mid-stream; no metadata row is committed and the temp file is cleaned up after the grace period.
+- **TEST-288** A payload spanning several 1 MiB blocks round-trips through `parallelGzipConduit` and decodes with plain `ungzip`: the output starts with the gzip magic and is one member, not concatenated members.
+- **TEST-289** A block-parallel gzip stream passes `gzip -t` and is fully decoded by a zlib-based client (`curl --compressed`); record the command in the manual benchmark.
+- **TEST-290** A corrupted block-parallel gzip stream returns `400 invalid_request` and leaves no metadata row, blob, or temp file.
+- **TEST-291** An identity upload larger than one block is stored as one gzip member; identity download is byte-equal and gzip passthrough returns the stored bytes with a matching `Content-Length`.
+- **TEST-292** A zero-byte upload produces a valid gzip stream and `size = 0`; block-parallel compression of an empty stream does not produce an empty body.
+- **TEST-293** A 32 MiB round-trip succeeds under a bounded heap (`+RTS -M192m`, or record why a tighter cap is flaky per `TEST-251`).
 
 ## 9. Security tests
 
@@ -335,11 +341,11 @@ hlint src app test
 | Upload, auth, expiry default | TEST-160…179, TEST-230…233 |
 | List | TEST-176, TEST-177, TEST-239, TEST-240 |
 | Delete | TEST-130…132, TEST-178, TEST-179, TEST-242…245 |
-| Download and compression | TEST-180…188, TEST-250…257 |
+| Download and compression | TEST-180…188, TEST-250…257, TEST-288…293 |
 | Password form and PBKDF2 | TEST-050…062, TEST-190…201, TEST-260…271 |
 | Expiry and cleanup | TEST-133…140 |
 | Durability | TEST-110…119 |
-| Streaming | TEST-250…257 |
+| Streaming | TEST-250…257, TEST-288…293 |
 | TLS | TEST-220…227, TEST-267, TEST-268 |
 | CLI | TEST-230…249 |
 | Security headers and logs | TEST-185, TEST-198, TEST-260…271 |

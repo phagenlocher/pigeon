@@ -49,6 +49,13 @@ import Test.Hspec
 import Test.QuickCheck hiding ((.&.))
 
 import Pigeon.API (UploadBody)
+import Pigeon.Client.Commands (desiredCapabilities)
+import Pigeon.Client.Config (
+  ClientCommand (..),
+  DeleteOptions (..),
+  PasswordSource (..),
+  UploadOptions (..),
+ )
 import Pigeon.Duration
 import Pigeon.Password
 import Pigeon.Server.Config (ServerConfig (..))
@@ -57,6 +64,18 @@ import Pigeon.Server.Storage
 import Pigeon.Streaming
 import Pigeon.Types
 import Support
+
+-- | Minimal upload options for capability-policy tests.
+uploadOptions :: Bool -> UploadOptions
+uploadOptions noCompress =
+  UploadOptions
+    { uoFile = "test.bin",
+      uoExpiresIn = Nothing,
+      uoName = Nothing,
+      uoContentType = Nothing,
+      uoPassword = NoPassword,
+      uoNoCompress = noCompress
+    }
 
 main :: IO ()
 main = hspec $ do
@@ -193,6 +212,15 @@ main = hspec $ do
       parseAcceptEncoding "br" `shouldBe` AcceptIdentity
       parseAcceptEncoding "gzip;q=oops" `shouldBe` AcceptIdentity
 
+  describe "client capabilities" $ do
+    it "keeps the gzip worker cap for compressed uploads" $
+      desiredCapabilities (Upload (uploadOptions False)) `shouldBe` maxGzipWorkers
+    it "uses two capabilities for identity uploads" $
+      desiredCapabilities (Upload (uploadOptions True)) `shouldBe` 2
+    it "uses two capabilities for list and delete" $ do
+      desiredCapabilities List `shouldBe` 2
+      desiredCapabilities (Delete (DeleteOptions [] True)) `shouldBe` 2
+
   describe "chunked file source" $ do
     it "reads a handle in the requested chunk size and preserves bytes" $ withTempDataDir $ \dir -> do
       let path = dir </> "chunks.bin"
@@ -211,6 +239,30 @@ main = hspec $ do
         withBinaryFile path ReadMode $ \handle ->
           runConduitRes (sourceHandleChunked (128 * 1024) handle .| sinkList)
       chunks `shouldBe` []
+
+  describe "parallel gzip" $ do
+    it "round-trips a payload spanning several blocks as one stream" $ do
+      let payload = BS.concat (replicate 3 (BS.replicate (gzipBlockSize + 17) 0x5a))
+      compressed <-
+        BS.concat <$> runConduitRes (yield payload .| parallelGzipConduitWith 4 .| sinkList)
+      BS.take 2 compressed `shouldBe` BS.pack [0x1f, 0x8b]
+      decompressed <-
+        BS.concat <$> runConduitRes (yield compressed .| ungzip .| sinkList)
+      decompressed `shouldBe` payload
+    it "produces one valid empty stream for empty input" $ do
+      compressed <-
+        BS.concat <$> runConduitRes (yield BS.empty .| parallelGzipConduitWith 4 .| sinkList)
+      BS.length compressed `shouldSatisfy` (> 0)
+      decompressed <-
+        BS.concat <$> runConduitRes (yield compressed .| ungzip .| sinkList)
+      decompressed `shouldBe` BS.empty
+    it "round-trips input smaller than one block" $ do
+      let payload = B8.replicate (gzipBlockSize - 1) 'a'
+      compressed <-
+        BS.concat <$> runConduitRes (yield payload .| parallelGzipConduitWith 4 .| sinkList)
+      decompressed <-
+        BS.concat <$> runConduitRes (yield compressed .| ungzip .| sinkList)
+      decompressed `shouldBe` payload
 
   describe "JSON" $ do
     it "serializes FileInfo with the documented field names" $ do
@@ -296,6 +348,35 @@ main = hspec $ do
       sfSize stored `shouldBe` fromIntegral (BS.length payload)
       blob <- BS.readFile (blobPath storage (sfId stored))
       blob `shouldBe` received
+      closeDb db
+    it "stores a multi-block identity upload as one gzip stream" $ withTempDataDir $ \dir -> do
+      storage <- initStorage defaultStorageHooks dir
+      db <- openDb (dir </> "pigeon.db")
+      migrate db
+      now <- getCurrentTime
+      let payload = BS.concat (replicate 2 (BS.replicate (gzipBlockSize + 1) 0x41))
+      stored <-
+        storeUpload storage db (storeRequest now Nothing payload)
+          >>= either (fail . show) pure
+      sfSize stored `shouldBe` fromIntegral (BS.length payload)
+      blob <- BS.readFile (blobPath storage (sfId stored))
+      BS.take 2 blob `shouldBe` BS.pack [0x1f, 0x8b]
+      raw <- runConduitRes (yield blob .| ungzip .| sinkList)
+      BS.concat raw `shouldBe` payload
+      closeDb db
+    it "stores a zero-byte identity upload as a valid gzip member" $ withTempDataDir $ \dir -> do
+      storage <- initStorage defaultStorageHooks dir
+      db <- openDb (dir </> "pigeon.db")
+      migrate db
+      now <- getCurrentTime
+      stored <-
+        storeUpload storage db (storeRequest now Nothing BS.empty)
+          >>= either (fail . show) pure
+      sfSize stored `shouldBe` 0
+      blob <- BS.readFile (blobPath storage (sfId stored))
+      BS.length blob `shouldSatisfy` (> 0)
+      raw <- runConduitRes (yield blob .| ungzip .| sinkList)
+      BS.concat raw `shouldBe` BS.empty
       closeDb db
     it "rejects an invalid gzip upload and removes the temp file" $ withTempDataDir $ \dir -> do
       storage <- initStorage defaultStorageHooks dir
@@ -578,6 +659,47 @@ main = hspec $ do
       fiSize info `shouldBe` 10
       response <- download port (fiId info) [("Accept-Encoding", "identity")]
       bodyOf response `shouldBe` "hello gzip"
+    it "accepts block-parallel gzip and serves it on both paths" $ withTestServer $ \_ port -> do
+      client <- testClientEnv port
+      let payload = B8.replicate gzipBlockSize 'a' <> B8.replicate gzipBlockSize 'b'
+      compressed <-
+        BS.concat <$> runConduitRes (yield payload .| parallelGzipConduitWith 4 .| sinkList)
+      BS.take 2 compressed `shouldBe` BS.pack [0x1f, 0x8b]
+      info <- uploadGzipRaw client "parallel.gz" compressed
+      fiSize info `shouldBe` fromIntegral (BS.length payload)
+      identity <- download port (fiId info) [("Accept-Encoding", "identity")]
+      bodyOf identity `shouldBe` LBS.fromStrict payload
+      passthrough <- download port (fiId info) [("Accept-Encoding", "gzip")]
+      bodyOf passthrough `shouldBe` LBS.fromStrict compressed
+      lookup "Content-Length" (responseHeaders passthrough)
+        `shouldBe` Just (B8.pack (show (BS.length compressed)))
+    it "rejects a corrupted block-parallel gzip stream over HTTP" $ withTestServer $ \_ port -> do
+      client <- testClientEnv port
+      let payload = BS.concat (replicate 2 (BS.replicate gzipBlockSize 0x5a))
+      compressed <-
+        BS.concat <$> runConduitRes (yield payload .| parallelGzipConduitWith 4 .| sinkList)
+      let middle = BS.length compressed `div` 2
+          corrupt = BS.take middle compressed <> BS.singleton 0xff <> BS.drop (middle + 1) compressed
+      response <-
+        requestWith
+          port
+          "/api/v1/files?filename=bad.gz"
+          "POST"
+          [ ("Authorization", encodeUtf8 authHeader),
+            ("Content-Encoding", "gzip"),
+            ("Content-Type", "application/octet-stream")
+          ]
+          corrupt
+      statusCode (statusOf response) `shouldBe` 400
+      listFiles client `shouldReturn` []
+    it "round-trips a 32 MiB upload through multiple blocks" $ withTestServer $ \_ port -> do
+      client <- testClientEnv port
+      let payload = BS.concat (replicate 32 (BS.replicate (1024 * 1024) 0x5a))
+      info <- uploadRaw client "large.bin" payload
+      fiSize info `shouldBe` fromIntegral (BS.length payload)
+      response <- download port (fiId info) [("Accept-Encoding", "identity")]
+      statusCode (statusOf response) `shouldBe` 200
+      LBS.toStrict (bodyOf response) `shouldBe` payload
     it "serves the password form and enforces the password" $ withTestServer $ \_ port -> do
       client <- testClientEnv port
       info <- uploadWithPassword client "secret.txt" "hunter2" "top secret"
