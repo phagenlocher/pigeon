@@ -56,7 +56,7 @@ import Pigeon.Client.Config (
   PasswordSource (..),
   UploadOptions (..),
  )
-import Pigeon.Client.Output (estimateEta, formatEta, formatUploadUrl)
+import Pigeon.Client.Output (estimateEta, formatEta, formatRate, formatUploadUrl, transferRate)
 import Pigeon.Duration
 import Pigeon.Password
 import Pigeon.Server.Config (ServerConfig (..))
@@ -117,6 +117,18 @@ main = hspec $ do
       formatEta 125 `shouldBe` "2m 05s"
       formatEta 3600 `shouldBe` "1h 00m"
       formatEta 3905 `shouldBe` "1h 05m"
+
+  describe "upload throughput" $ do
+    it "is unavailable until a stable estimate is possible" $ do
+      transferRate 0 10 `shouldBe` Nothing
+      transferRate 100 0.25 `shouldBe` Nothing
+    it "averages bytes over elapsed time" $
+      transferRate 500 5 `shouldBe` Just 100
+    it "formats bytes per second" $ do
+      formatRate 0 `shouldBe` "0 B/s"
+      formatRate 512 `shouldBe` "512 B/s"
+      formatRate 1024 `shouldBe` "1.0 KiB/s"
+      formatRate (4.2 * 1024 * 1024) `shouldBe` "4.2 MiB/s"
 
   describe "upload output" $ do
     it "prints only the public URL in the default mode" $ do

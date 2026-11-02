@@ -1,8 +1,10 @@
 -- | CLI output formatting: sizes, times, tables, and command results.
 module Pigeon.Client.Output (
   formatSize,
+  transferRate,
   estimateEta,
   formatEta,
+  formatRate,
   formatUploadUrl,
   formatFileTable,
   truncateName,
@@ -32,13 +34,25 @@ formatSize bytes
     let rounded = fromIntegral (round (value * 10) :: Int) / 10 :: Double
      in T.pack (show rounded)
 
-{- | Minimum elapsed seconds before an ETA is considered stable enough to show.
+{- | Minimum elapsed seconds before a throughput or ETA is considered stable
+enough to show.
 
 The first redraws of a fast local upload would otherwise extrapolate from a
 tiny sample and display a wildly wrong estimate.
 -}
 minimumEtaElapsedSeconds :: Double
 minimumEtaElapsedSeconds = 0.5
+
+{- | Average throughput in bytes per second since the transfer started.
+
+Returns 'Nothing' while no estimate is possible: no bytes have been counted or
+less than 'minimumEtaElapsedSeconds' has elapsed.
+-}
+transferRate :: Int64 -> Double -> Maybe Double
+transferRate current elapsedSeconds
+  | current <= 0 = Nothing
+  | elapsedSeconds < minimumEtaElapsedSeconds = Nothing
+  | otherwise = Just (fromIntegral current / elapsedSeconds)
 
 {- | Estimate the remaining upload time in seconds from the average throughput
 since the transfer started.
@@ -52,13 +66,13 @@ estimateEta total current elapsedSeconds
   | total <= 0 = Nothing
   | current <= 0 = Nothing
   | current >= total = Just 0
-  | elapsedSeconds < minimumEtaElapsedSeconds = Nothing
   | otherwise =
-      let rate :: Double
-          rate = fromIntegral current / elapsedSeconds
-          remaining :: Double
-          remaining = fromIntegral (total - current)
-       in Just (max 0 (ceiling (remaining / rate)))
+      case transferRate current elapsedSeconds of
+        Nothing -> Nothing
+        Just rate ->
+          let remaining :: Double
+              remaining = fromIntegral (total - current)
+           in Just (max 0 (ceiling (remaining / rate)))
 
 -- | Format a remaining-time estimate: @45s@, @1m 05s@, or @1h 05m@.
 formatEta :: Int64 -> Text
@@ -75,6 +89,10 @@ formatEta seconds
   twoDigits :: Int64 -> Text
   twoDigits value =
     (if value < 10 then "0" else "") <> T.pack (show value)
+
+-- | Format a throughput in bytes per second: @0 B/s@, @512 B\/s@, or @4.2 MiB\/s@.
+formatRate :: Double -> Text
+formatRate rate = formatSize (round rate) <> "/s"
 
 {- | Default upload result: the public URL followed by a newline.
 

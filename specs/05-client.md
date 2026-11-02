@@ -152,13 +152,14 @@ pigeon-client [GLOBAL] upload FILE
 - **CLI-081** Progress is written to stderr, never stdout.
 - **CLI-082** Format:
   ```
-  Uploading report.pdf: 12.3 MiB / 45.6 MiB (27%, ETA 1m 05s)
+  Uploading report.pdf: 12.3 MiB / 45.6 MiB (27%, 4.2 MiB/s, ETA 1m 05s)
   ```
   Every update begins with `\r` followed by `ESC[2K` (return to column 0 and erase the entire line) and emits no newline, so a shorter update cannot leave characters from a longer one. No final progress line or newline is printed.
 - **CLI-083** Redraw at most every 75 ms (`progressIntervalMs`). When the upload finishes, whether it succeeded or failed, erase the progress line with `\r` followed by `ESC[2K` (erase entire line) before any other output, so the terminal is left with only the command's result or error.
 - **CLI-084** If the file size is zero, the body has no chunks, so no progress line is displayed; the command prints only its result or error.
 - **CLI-085** `--verbose` prints a start line before the body is sent and an end line once the response completes. Both go to stderr, prefixed `verbose:`, and may include the local path, display filename, byte size, server URL, content type, compression mode, file id, and elapsed milliseconds. The end line is printed after the progress line is erased. They never include the token, the password, or file contents.
 - **CLI-086** The progress line includes the estimated remaining time as `, ETA <time>` inside the existing parentheses. The estimate uses the average throughput of original bytes (CLI-071) since the first chunk and is formatted as `45s`, `1m 05s`, or `1h 05m`. Partial seconds are rounded up, so `ETA 0s` appears only once every byte has been counted. The segment is omitted while no bytes have been counted, the total size is unknown, or less than 0.5 s has elapsed. It never adds a line or newline of its own.
+- **CLI-087** The progress line includes the average throughput as `<rate>/s` immediately before the ETA. The rate uses the same original-byte count and elapsed time as CLI-086 and is formatted with binary units and one decimal, for example `4.2 MiB/s`. The segment is omitted while no bytes have been counted or less than 0.5 s has elapsed. It never adds a line or newline of its own.
 
 ### 4.5 Output
 

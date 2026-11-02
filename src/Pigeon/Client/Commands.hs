@@ -58,8 +58,10 @@ import Pigeon.Client.Output (
   estimateEta,
   formatEta,
   formatFileTable,
+  formatRate,
   formatSize,
   formatUploadUrl,
+  transferRate,
  )
 import Pigeon.Password (validatePassword)
 import Pigeon.Streaming (
@@ -459,13 +461,17 @@ printProgress filename total current elapsedSeconds = do
       percentage
         | total <= 0 = 100
         | otherwise = min 100 (fromIntegral ((current * 100) `div` total))
+      speed :: Text
+      speed = case transferRate current elapsedSeconds of
+        Nothing -> ""
+        Just rate -> ", " <> formatRate rate
       eta :: Text
       eta = case estimateEta total current elapsedSeconds of
         Nothing -> ""
         Just seconds -> ", ETA " <> formatEta seconds
       detail :: Text
       detail
-        | total <= 0 = formatSize current
+        | total <= 0 = formatSize current <> speed
         | otherwise =
             formatSize current
               <> " / "
@@ -473,6 +479,7 @@ printProgress filename total current elapsedSeconds = do
               <> " ("
               <> T.pack (show percentage)
               <> "%"
+              <> speed
               <> eta
               <> ")"
   TIO.hPutStr stderr (eraseLine <> "Uploading " <> filename <> ": " <> detail)
