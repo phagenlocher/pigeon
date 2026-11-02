@@ -56,7 +56,14 @@ import Pigeon.Client.Config (
   PasswordSource (..),
   UploadOptions (..),
  )
-import Pigeon.Client.Output (estimateEta, formatEta, formatRate, formatUploadUrl, transferRate)
+import Pigeon.Client.Output (
+  estimateEta,
+  formatEta,
+  formatRate,
+  formatUploadUrl,
+  progressLineVisible,
+  transferRate,
+ )
 import Pigeon.Duration
 import Pigeon.Password
 import Pigeon.Server.Config (ServerConfig (..))
@@ -129,6 +136,17 @@ main = hspec $ do
       formatRate 512 `shouldBe` "512 B/s"
       formatRate 1024 `shouldBe` "1.0 KiB/s"
       formatRate (4.2 * 1024 * 1024) `shouldBe` "4.2 MiB/s"
+
+  describe "upload progress visibility" $ do
+    it "withholds the line until the ETA exceeds five seconds" $ do
+      progressLineVisible False Nothing `shouldBe` False
+      progressLineVisible False (Just 0) `shouldBe` False
+      progressLineVisible False (Just 5) `shouldBe` False
+      progressLineVisible False (Just 6) `shouldBe` True
+    it "keeps the line visible once it has been drawn" $ do
+      progressLineVisible True Nothing `shouldBe` True
+      progressLineVisible True (Just 0) `shouldBe` True
+      progressLineVisible True (Just 5) `shouldBe` True
 
   describe "upload output" $ do
     it "prints only the public URL in the default mode" $ do

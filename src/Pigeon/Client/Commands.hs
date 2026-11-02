@@ -61,6 +61,7 @@ import Pigeon.Client.Output (
   formatRate,
   formatSize,
   formatUploadUrl,
+  progressLineVisible,
   transferRate,
  )
 import Pigeon.Password (validatePassword)
@@ -435,10 +436,10 @@ progressConduit enabled filename total counter
   | not enabled = awaitForever yield
   | otherwise = do
       started <- liftIO getCurrentTime
-      go started (epochToUtc 0)
+      go False started (epochToUtc 0)
  where
-  go :: UTCTime -> UTCTime -> ConduitT BS.ByteString BS.ByteString (ResourceT IO) ()
-  go started lastPrint =
+  go :: Bool -> UTCTime -> UTCTime -> ConduitT BS.ByteString BS.ByteString (ResourceT IO) ()
+  go shown started lastPrint =
     await >>= \case
       Nothing -> pure ()
       Just chunk -> do
@@ -449,15 +450,25 @@ progressConduit enabled filename total counter
             elapsedTotal = realToFrac (diffUTCTime now started)
             shouldPrintProgress :: Bool
             shouldPrintProgress = elapsed * 1000 >= progressIntervalMs
-        when shouldPrintProgress $ do
-          current <- liftIO (readIORef counter)
-          liftIO (printProgress filename total current elapsedTotal)
+        shown' <-
+          if shouldPrintProgress
+            then do
+              current <- liftIO (readIORef counter)
+              liftIO (printProgress shown filename total current elapsedTotal)
+            else pure shown
         yield chunk
-        go started (if shouldPrintProgress then now else lastPrint)
+        go shown' started (if shouldPrintProgress then now else lastPrint)
 
-printProgress :: Text -> Int64 -> Int64 -> Double -> IO ()
-printProgress filename total current elapsedSeconds = do
-  let percentage :: Int
+{- | Draw or skip the progress line, returning whether it is now visible.
+
+Once the line has been drawn it stays visible for the rest of the upload, even
+when the ETA falls to the threshold or below.
+-}
+printProgress :: Bool -> Text -> Int64 -> Int64 -> Double -> IO Bool
+printProgress shown filename total current elapsedSeconds =
+  let eta :: Maybe Int64
+      eta = estimateEta total current elapsedSeconds
+      percentage :: Int
       percentage
         | total <= 0 = 100
         | otherwise = min 100 (fromIntegral ((current * 100) `div` total))
@@ -465,25 +476,27 @@ printProgress filename total current elapsedSeconds = do
       speed = case transferRate current elapsedSeconds of
         Nothing -> ""
         Just rate -> ", " <> formatRate rate
-      eta :: Text
-      eta = case estimateEta total current elapsedSeconds of
+      etaSegment :: Text
+      etaSegment = case eta of
         Nothing -> ""
         Just seconds -> ", ETA " <> formatEta seconds
       detail :: Text
-      detail
-        | total <= 0 = formatSize current <> speed
-        | otherwise =
-            formatSize current
-              <> " / "
-              <> formatSize total
-              <> " ("
-              <> T.pack (show percentage)
-              <> "%"
-              <> speed
-              <> eta
-              <> ")"
-  TIO.hPutStr stderr (eraseLine <> "Uploading " <> filename <> ": " <> detail)
-  hFlush stderr
+      detail =
+        formatSize current
+          <> " / "
+          <> formatSize total
+          <> " ("
+          <> T.pack (show percentage)
+          <> "%"
+          <> speed
+          <> etaSegment
+          <> ")"
+   in if progressLineVisible shown eta
+        then do
+          TIO.hPutStr stderr (eraseLine <> "Uploading " <> filename <> ": " <> detail)
+          hFlush stderr
+          pure True
+        else pure False
 
 {- | Erase the in-place progress line so only the command result remains
 (CLI-083). Callers skip this for zero-byte uploads, which never draw a progress

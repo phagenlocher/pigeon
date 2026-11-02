@@ -5,6 +5,7 @@ module Pigeon.Client.Output (
   estimateEta,
   formatEta,
   formatRate,
+  progressLineVisible,
   formatUploadUrl,
   formatFileTable,
   truncateName,
@@ -93,6 +94,26 @@ formatEta seconds
 -- | Format a throughput in bytes per second: @0 B/s@, @512 B\/s@, or @4.2 MiB\/s@.
 formatRate :: Double -> Text
 formatRate rate = formatSize (round rate) <> "/s"
+
+{- | Minimum ETA, in seconds, before the progress line is drawn.
+
+Fast uploads and the final seconds of a slower one would otherwise flash a
+progress line for no useful reason.
+-}
+minimumVisibleEtaSeconds :: Int64
+minimumVisibleEtaSeconds = 5
+
+{- | Whether the progress line should be drawn, given whether it has already
+been drawn and the current ETA estimate.
+
+The line is withheld until the remaining time exceeds
+'minimumVisibleEtaSeconds'. Once drawn, it stays visible for the rest of the
+upload, including during the final seconds.
+-}
+progressLineVisible :: Bool -> Maybe Int64 -> Bool
+progressLineVisible True _ = True
+progressLineVisible False Nothing = False
+progressLineVisible False (Just seconds) = seconds > minimumVisibleEtaSeconds
 
 {- | Default upload result: the public URL followed by a newline.
 
