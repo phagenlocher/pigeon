@@ -2,6 +2,7 @@
 module Pigeon.Server.Log (
   Logger,
   LogLevel (..),
+  MonadLogger (..),
   mkLogger,
   closeLogger,
   logMessage,
@@ -9,9 +10,11 @@ module Pigeon.Server.Log (
   logWarn,
   logError,
   logDebug,
+  writeLog,
   requestLogger,
 ) where
 
+import Control.Monad.IO.Class (MonadIO, liftIO)
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Text.Encoding (decodeUtf8With)
@@ -40,6 +43,11 @@ data Logger = Logger
     lgQuiet :: Bool
   }
 
+-- | Ambient access to a logger.
+class (MonadIO m) => MonadLogger m where
+  -- | Obtain the logger from the surrounding environment.
+  askLogger :: m Logger
+
 {- | Create a stderr logger. @--quiet@ hides request logs but not errors and
 warnings; @--verbose@ lowers the minimum level to 'Debug'.
 -}
@@ -55,8 +63,31 @@ mkLogger cfg = do
 closeLogger :: Logger -> IO ()
 closeLogger = Log.rmLoggerSet . lgSet
 
-logMessage :: Logger -> LogLevel -> Text -> IO ()
-logMessage logger level message =
+-- | Write a message at a specific level using the ambient logger.
+logMessage :: (MonadLogger m) => LogLevel -> Text -> m ()
+logMessage level message = do
+  logger <- askLogger
+  liftIO (writeLog logger level message)
+
+-- | Write an informational message using the ambient logger.
+logInfo :: (MonadLogger m) => Text -> m ()
+logInfo = logMessage Info
+
+-- | Write a warning using the ambient logger.
+logWarn :: (MonadLogger m) => Text -> m ()
+logWarn = logMessage Warn
+
+-- | Write an error using the ambient logger.
+logError :: (MonadLogger m) => Text -> m ()
+logError = logMessage Error
+
+-- | Write a debug message using the ambient logger.
+logDebug :: (MonadLogger m) => Text -> m ()
+logDebug = logMessage Debug
+
+-- | Write a message to an explicit logger.
+writeLog :: Logger -> LogLevel -> Text -> IO ()
+writeLog logger level message =
   whenLevel level $ do
     timestamp <- currentTimestamp
     let line = timestamp <> " " <> T.pack (show level) <> " " <> message <> "\n"
@@ -66,12 +97,6 @@ logMessage logger level message =
   whenLevel lvl action
     | lvl >= lgMinLevel logger = action
     | otherwise = pure ()
-
-logInfo, logWarn, logError, logDebug :: Logger -> Text -> IO ()
-logInfo logger = logMessage logger Info
-logWarn logger = logMessage logger Warn
-logError logger = logMessage logger Error
-logDebug logger = logMessage logger Debug
 
 currentTimestamp :: IO Text
 currentTimestamp =
@@ -101,5 +126,5 @@ requestLogger logger app request respond
                 <> T.pack (show (statusCode status))
                 <> " duration_ms="
                 <> T.pack (show (elapsedMs :: Int))
-        logInfo logger message
+        writeLog logger Info message
         respond response

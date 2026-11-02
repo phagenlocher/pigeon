@@ -43,7 +43,7 @@ import System.Posix.Signals (
  )
 
 import Pigeon.API (FullAPI)
-import Pigeon.Server.App (App, MonadLogger (..), appToHandler, runApp)
+import Pigeon.Server.App (App, appToHandler, runApp)
 import Pigeon.Server.Config (ServerConfig (..), TlsMode (..))
 import Pigeon.Server.Db (closeDb, migrate, openDb)
 import Pigeon.Server.Env (AppEnv (..))
@@ -53,14 +53,7 @@ import Pigeon.Server.Handlers (
   listHandler,
   uploadHandler,
  )
-import Pigeon.Server.Log (
-  closeLogger,
-  logError,
-  logInfo,
-  logWarn,
-  mkLogger,
-  requestLogger,
- )
+import Pigeon.Server.Log qualified as Log
 import Pigeon.Server.PathSafety (UnsafePath (..))
 import Pigeon.Server.Storage (StorageHooks (..), defaultStorageHooks, initStorage)
 import Pigeon.Server.Sweeper (reconcile, startSweeper)
@@ -69,12 +62,12 @@ import Pigeon.Server.Web (robotsHandler, webHandler)
 -- | Build the environment without starting a listener. Useful for tests.
 mkAppEnv :: ServerConfig -> IO AppEnv
 mkAppEnv cfg = do
-  logger <- mkLogger cfg
+  logger <- Log.mkLogger cfg
   storage <-
     initStorage
       defaultStorageHooks
-        { shWarn = logWarn logger,
-          shError = logError logger
+        { shWarn = Log.writeLog logger Log.Warn,
+          shError = Log.writeLog logger Log.Error
         }
       (scDataDir cfg)
   db <- openDb (scDbPath cfg)
@@ -90,12 +83,12 @@ mkAppEnv cfg = do
 closeAppEnv :: AppEnv -> IO ()
 closeAppEnv env = do
   closeDb (aeDb env)
-  closeLogger (aeLogger env)
+  Log.closeLogger (aeLogger env)
 
 -- | Compose middleware and the Servant application.
 mkApp :: AppEnv -> Application
 mkApp env =
-  requestLogger (aeLogger env)
+  Log.requestLogger (aeLogger env)
     . securityHeaders (aeConfig env)
     . modifyResponse addNoStore
     $ serve
@@ -148,7 +141,7 @@ runServer cfg =
     result <- runApp env serveForever
     case result of
       Left serverError -> do
-        logError (aeLogger env) ("server failed: " <> T.pack (show serverError))
+        Log.writeLog (aeLogger env) Log.Error ("server failed: " <> T.pack (show serverError))
       Right () -> pure ()
 
   reportUnsafePath :: UnsafePath -> IO ()
@@ -163,10 +156,8 @@ serveForever = do
   sweeper <- startSweeper
   let app = mkApp env
       settings = warpSettings env
-  logger <- askLogger
-  liftIO
-    $ logInfo logger
-    $ "startup host="
+  Log.logInfo $
+    "startup host="
       <> T.pack (show (scHost (aeConfig env)))
       <> " port="
       <> T.pack (show (scPort (aeConfig env)))
@@ -180,7 +171,7 @@ serveForever = do
       <> T.pack (show (scMaxExpiry (aeConfig env)))
       <> " token=<redacted>"
   when (scTlsMode (aeConfig env) == TlsDisabled) $
-    liftIO (logWarn logger "WARNING: TLS disabled; tokens and passwords are transmitted in plaintext")
+    Log.logWarn "WARNING: TLS disabled; tokens and passwords are transmitted in plaintext"
   liftIO $
     ( case scTlsMode (aeConfig env) of
         TlsDisabled -> Warp.runSettings settings app
@@ -190,7 +181,7 @@ serveForever = do
         cancel sweeper
         _ <- waitCatch sweeper
         pure ()
-  liftIO (logInfo logger "shutdown complete")
+  Log.logInfo "shutdown complete"
 
 warpSettings :: AppEnv -> Warp.Settings
 warpSettings env =
@@ -226,7 +217,7 @@ warpSettings env =
           Just request -> T.intercalate "/" ("/" : pathInfo request)
         method :: T.Text
         method = maybe "" (decodeUtf8With lenientDecode . requestMethod) maybeRequest
-    logError (aeLogger env) $
+    Log.writeLog (aeLogger env) Log.Error $
       "request failed method="
         <> method
         <> " path="

@@ -1,8 +1,7 @@
--- | The server application monad and its logger abstraction.
+-- | The server application monad.
 module Pigeon.Server.App (
   App (..),
   runApp,
-  MonadLogger (..),
   appToHandler,
 ) where
 
@@ -13,7 +12,7 @@ import Control.Monad.Reader (MonadReader, ReaderT, asks, runReaderT)
 import Servant.Server (Handler (..), ServerError)
 
 import Pigeon.Server.Env (AppEnv (..))
-import Pigeon.Server.Log (Logger)
+import Pigeon.Server.Log (MonadLogger (..))
 
 {- | Server orchestration runs here. It has the ambient 'AppEnv', can raise
 'ServerError' values, and uses the 'safe-exceptions' classes.
@@ -32,10 +31,6 @@ newtype App a = App
       MonadReader AppEnv,
       MonadThrow
     )
-
--- | Abstract logger access in a reader style.
-class (Monad m) => MonadLogger m where
-  askLogger :: m Logger
 
 instance MonadLogger App where
   askLogger = asks aeLogger

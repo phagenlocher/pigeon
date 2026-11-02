@@ -329,10 +329,10 @@ hlint src app test
 
 ### 10.1 App monad and logging
 
-- **TEST-284** `askLogger` returns the logger from the ambient `AppEnv`; a test runs `App` against a recording logger and observes the same logger instance.
+- **TEST-284** `askLogger` returns the logger from the ambient `AppEnv`; a test runs `App` against a recording logger and observes the same logger instance. `logInfo` and the other level functions call `askLogger` and write through that logger without an explicit `Logger` argument.
 - **TEST-285** A `ServerError` thrown inside `App` is converted by `appToHandler` into the corresponding HTTP status and JSON error body.
 - **TEST-286** Modules do not import `Control.Exception` or `Control.Exception.Base`; `.hlint.yaml` restricts them, so `hlint` fails if they do.
-- **TEST-287** A request handled through the raw `/f/:id` application runs in `App` and logs through `askLogger` without a `Logger` argument.
+- **TEST-287** A request handled through the raw `/f/:id` application runs in `App` and logs through the `MonadLogger`-constrained `logWarn`/`logError` functions without a `Logger` argument.
 
 ## 11. Acceptance matrix
 

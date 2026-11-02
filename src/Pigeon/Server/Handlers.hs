@@ -29,7 +29,7 @@ import Pigeon.Password (
   hashPassword,
   validatePassword,
  )
-import Pigeon.Server.App (App, MonadLogger (..))
+import Pigeon.Server.App (App)
 import Pigeon.Server.Auth (checkBearer)
 import Pigeon.Server.Config (ServerConfig (..))
 import Pigeon.Server.Db
@@ -123,10 +123,8 @@ uploadHandler auth rawFilename rawExpires rawContentType rawEncoding rawPassword
     Left err -> throwError (storageError err)
     Right value -> pure value
 
-  logger <- askLogger
-  liftIO
-    $ logInfo logger
-    $ "upload id="
+  logInfo $
+    "upload id="
       <> unFileId (sfId stored)
       <> " size_original="
       <> T.pack (show (sfSize stored))
@@ -173,8 +171,7 @@ deleteHandler fileId auth = do
     then throwError notFound
     else do
       liftIO (deleteBlob (aeStorage env) fileId)
-      logger <- askLogger
-      liftIO $ logInfo logger ("delete id=" <> unFileId fileId)
+      logInfo ("delete id=" <> unFileId fileId)
       pure NoContent
 
 healthHandler :: App Health

@@ -168,7 +168,7 @@ runServer :: ServerConfig -> IO ()
 mkApp    :: AppEnv -> Application
 ```
 
-All server orchestration runs in `App` (`Pigeon.Server.App`), a reader monad over `AppEnv` with `MonadIO`, `MonadReader AppEnv`, `MonadError ServerError`, and the `safe-exceptions` classes. The logger is obtained through `askLogger`, not passed as an argument.
+All server orchestration runs in `App` (`Pigeon.Server.App`), a reader monad over `AppEnv` with `MonadIO`, `MonadReader AppEnv`, `MonadError ServerError`, and the `safe-exceptions` classes. Logging is performed with `logInfo`, `logWarn`, `logError`, and `logDebug` from `Pigeon.Server.Log`; these are constrained by `MonadLogger`, obtain the ambient logger with `askLogger`, and do not require the caller to pass a `Logger`.
 
 `mkApp` composes:
 
@@ -197,7 +197,7 @@ server env =
 - **SRV-063** `robotsHandler` returns the fixed `robots.txt` body.
 - **SRV-064** The gzip middleware is applied only to `/api/` and HTML responses; it is skipped for `/f/` file responses.
 - **SRV-065** Request logging uses the path without the query string.
-- **SRV-066** Handlers, the web route, the sweeper, and reconciliation use `askLogger` from `MonadLogger`; they never receive a `Logger` parameter.
+- **SRV-066** Handlers, the web route, the sweeper, and reconciliation call `logInfo`/`logWarn`/`logError` from `Pigeon.Server.Log`; these functions use `askLogger` internally, so application code never receives a `Logger` parameter.
 - **SRV-067** The raw `/f/:id` application runs each request through `runApp` so DB lookups, password verification, and logging use the same `App` environment.
 - **SRV-068** Exception handling in server code imports `Control.Exception.Safe`, not `Control.Exception`.
 - **SRV-069** A `ServerError` thrown inside `App` becomes the same HTTP response as one thrown from `Handler`; no exception text reaches the client.

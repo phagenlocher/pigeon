@@ -20,7 +20,7 @@ import Data.Text qualified as T
 import Data.Time (UTCTime, diffUTCTime, getCurrentTime)
 import System.Directory (getModificationTime)
 
-import Pigeon.Server.App (App, MonadLogger (..), runApp)
+import Pigeon.Server.App (App, runApp)
 import Pigeon.Server.Config (ServerConfig (..))
 import Pigeon.Server.Db (
   allIds,
@@ -29,7 +29,7 @@ import Pigeon.Server.Db (
   expiredIds,
  )
 import Pigeon.Server.Env (AppEnv (..))
-import Pigeon.Server.Log (logInfo, logWarn)
+import Pigeon.Server.Log (LogLevel (..), logInfo, logWarn, writeLog)
 import Pigeon.Server.Storage (
   blobExists,
   blobPath,
@@ -69,13 +69,12 @@ startSweeper = do
     threadDelay (fromIntegral (seconds * 1000000))
     result <- runApp env (sweepOnce `catch` logSweepFailure)
     case result of
-      Left serverError -> logWarn (aeLogger env) ("sweep error: " <> T.pack (show serverError))
+      Left serverError -> writeLog (aeLogger env) Warn ("sweep error: " <> T.pack (show serverError))
       Right () -> pure ()
  where
   logSweepFailure :: SomeException -> App ()
-  logSweepFailure (err :: SomeException) = do
-    logger <- askLogger
-    liftIO (logWarn logger ("sweep failed: " <> T.pack (show err)))
+  logSweepFailure (err :: SomeException) =
+    logWarn ("sweep failed: " <> T.pack (show err))
 
 {- | One expiry sweep: commit row deletions, then unlink blobs outside the DB
 lock, then clean orphans and stale temp files.
@@ -91,19 +90,17 @@ sweepOnce = do
   temps <- cleanupTempFiles now
   let counts :: SweepCounts
       counts = SweepCounts (length deleted) orphans temps
-  when (sweepShouldLog (scVerbose (aeConfig env)) counts) $ do
-    logger <- askLogger
-    liftIO
-      $ logInfo logger
-      $ "sweep expired_rows="
-        <> T.pack (show (sweepExpiredRows counts))
-        <> " expired_blobs="
-        <> T.pack (show (sweepExpiredRows counts))
-        <> " orphan_blobs="
-        <> T.pack (show (sweepOrphanBlobs counts))
-        <> " temp_files="
-        <> T.pack (show (sweepTempFiles counts))
-        <> " errors=0"
+  when (sweepShouldLog (scVerbose (aeConfig env)) counts)
+    $ logInfo
+    $ "sweep expired_rows="
+      <> T.pack (show (sweepExpiredRows counts))
+      <> " expired_blobs="
+      <> T.pack (show (sweepExpiredRows counts))
+      <> " orphan_blobs="
+      <> T.pack (show (sweepOrphanBlobs counts))
+      <> " temp_files="
+      <> T.pack (show (sweepTempFiles counts))
+      <> " errors=0"
 
 {- | Startup reconciliation. Removes stale temp files, old orphan blobs, and
 rows whose blob is missing.
@@ -115,13 +112,10 @@ reconcile = do
   removedTemps <- cleanupTempFiles now
   removedOrphans <- cleanupOrphans now
   missing <- liftIO (deleteRowsMissingBlob (aeDb env) (blobExists (aeStorage env)))
-  logger <- askLogger
-  liftIO $
-    forM_ missing $ \fileId ->
-      logWarn logger ("removed row with missing blob id=" <> unFileId fileId)
-  liftIO
-    $ logInfo logger
-    $ "reconcile temp_files="
+  forM_ missing $ \fileId ->
+    logWarn ("removed row with missing blob id=" <> unFileId fileId)
+  logInfo $
+    "reconcile temp_files="
       <> T.pack (show removedTemps)
       <> " orphan_blobs="
       <> T.pack (show removedOrphans)
