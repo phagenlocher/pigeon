@@ -81,7 +81,7 @@ There are no user accounts, no per-user ownership, and no roles. Anyone with the
 3. Client omits `expires_in`.
 4. Server applies `--default-expiry` (default `7d`), streams the body to a temp file, stores a gzip blob, and inserts metadata.
 5. Server returns `201` with `FileInfo`, including the absolute public URL and the computed `expiresAt`.
-6. Client prints the URL and expiry.
+6. Client prints the URL.
 
 ### 4.2 Upload with password and explicit expiry
 

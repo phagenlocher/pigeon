@@ -162,20 +162,16 @@ pigeon-client [GLOBAL] upload FILE
 
 ### 4.5 Output
 
-Human mode:
+Default mode:
 
 ```
-Uploaded report.pdf (12.4 MiB)
-  id:       7q3m9x2k4v8p1c6d
-  expires:  2026-11-07 10:00:00 UTC (6d 23h)
-  password: yes
-  url:      https://files.example.com/f/7q3m9x2k4v8p1c6d
+https://files.example.com/f/7q3m9x2k4v8p1c6d
 ```
 
-- **CLI-090** Timestamps are displayed in UTC with `YYYY-MM-DD HH:MM:SS UTC`.
-- **CLI-091** Remaining time is humanized: `6d 23h`, `23h 59m`, `59m`, `<1m`.
+- **CLI-090** On a successful upload, stdout contains only the public `url` returned by the server, followed by a newline. No id, filename, size, expiry, or password summary is printed.
+- **CLI-091** Remaining time in `list` is humanized: `6d 23h`, `23h 59m`, `59m`, `<1m`.
 - **CLI-092** Sizes use binary units with one decimal: `0 B`, `1.0 KiB`, `12.4 MiB`, `1.2 GiB`.
-- **CLI-093** `password` is `yes` or `no`.
+- **CLI-093** The `list` password column is `yes` or `no`.
 - **CLI-094** The `url` is printed exactly as returned by the server.
 
 JSON mode:
@@ -195,6 +191,7 @@ JSON mode:
 
 - **CLI-095** JSON is a single object, compact or pretty, followed by a newline.
 - **CLI-096** JSON output goes to stdout; warnings and errors remain on stderr.
+- **CLI-097** `--quiet` suppresses progress (CLI-080) but the result URL is still printed.
 
 ## 5. `list`
 
@@ -321,6 +318,10 @@ pigeon-client --server https://files.example.com --token-file ~/.pigeon-token \
 # Upload with a one-day expiry and a prompted password
 pigeon-client --server https://files.example.com --token-file ~/.pigeon-token \
   upload ./secret.zip --expires-in 24h --password
+
+# Capture the published URL in a script
+url=$(pigeon-client --server https://files.example.com --token-file ~/.pigeon-token \
+  upload ./report.pdf)
 
 # Upload without network compression
 pigeon-client --server https://files.example.com --token-file ~/.pigeon-token \

@@ -57,9 +57,9 @@ import Pigeon.Client.Output (
   deleteResultJson,
   estimateEta,
   formatEta,
-  formatFileInfo,
   formatFileTable,
   formatSize,
+  formatUploadUrl,
  )
 import Pigeon.Password (validatePassword)
 import Pigeon.Streaming (
@@ -150,10 +150,9 @@ runUpload cfg clientApi options = do
             Left _ -> reportFailure cfg (Failure 7 "file_error" ("cannot read file: " <> T.pack (uoFile options)))
             Right (Left err) -> reportFailure cfg (mapClientError err)
             Right (Right info) -> do
-              now <- getCurrentTime
               if ccJson cfg
                 then LBS.putStr (encode info) >> putStrLn ""
-                else TIO.putStr (formatFileInfo now info)
+                else TIO.putStr (formatUploadUrl info)
               pure 0
 
 {- | Bytes read from the input file per chunk. Larger reads cut syscall and

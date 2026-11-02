@@ -1,10 +1,9 @@
--- | CLI output formatting: sizes, times, tables, and human messages.
+-- | CLI output formatting: sizes, times, tables, and command results.
 module Pigeon.Client.Output (
   formatSize,
-  formatUtc,
   estimateEta,
   formatEta,
-  formatFileInfo,
+  formatUploadUrl,
   formatFileTable,
   truncateName,
   deleteResultJson,
@@ -77,21 +76,13 @@ formatEta seconds
   twoDigits value =
     (if value < 10 then "0" else "") <> T.pack (show value)
 
--- | UTC timestamp in CLI form.
-formatUtc :: UTCTime -> Text
-formatUtc =
-  T.pack . Time.formatTime Time.defaultTimeLocale "%Y-%m-%d %H:%M:%S UTC"
+{- | Default upload result: the public URL followed by a newline.
 
--- | Human-readable upload result.
-formatFileInfo :: UTCTime -> FileInfo -> Text
-formatFileInfo now FileInfo{..} =
-  T.unlines
-    [ "Uploaded " <> fiFilename <> " (" <> formatSize fiSize <> ")",
-      "  id:       " <> showFileId fiId,
-      "  expires:  " <> formatUtc fiExpiresAt <> " (" <> remainingUntil now fiExpiresAt <> ")",
-      "  password: " <> (if fiHasPassword then "yes" else "no"),
-      "  url:      " <> fiUrl
-    ]
+The URL is printed exactly as returned by the server and is the only thing
+written to stdout for a successful upload.
+-}
+formatUploadUrl :: FileInfo -> Text
+formatUploadUrl info = fiUrl info <> "\n"
 
 -- | Human-readable list table. Preserves the input order.
 formatFileTable :: UTCTime -> [FileInfo] -> Text

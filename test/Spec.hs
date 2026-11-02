@@ -56,7 +56,7 @@ import Pigeon.Client.Config (
   PasswordSource (..),
   UploadOptions (..),
  )
-import Pigeon.Client.Output (estimateEta, formatEta)
+import Pigeon.Client.Output (estimateEta, formatEta, formatUploadUrl)
 import Pigeon.Duration
 import Pigeon.Password
 import Pigeon.Server.Config (ServerConfig (..))
@@ -117,6 +117,22 @@ main = hspec $ do
       formatEta 125 `shouldBe` "2m 05s"
       formatEta 3600 `shouldBe` "1h 00m"
       formatEta 3905 `shouldBe` "1h 05m"
+
+  describe "upload output" $ do
+    it "prints only the public URL in the default mode" $ do
+      let info :: FileInfo
+          info =
+            FileInfo
+              { fiId = FileId "0000000000000000",
+                fiFilename = "report.pdf",
+                fiSize = 12,
+                fiContentType = "application/pdf",
+                fiCreatedAt = epochToUtc 0,
+                fiExpiresAt = epochToUtc 3600,
+                fiHasPassword = True,
+                fiUrl = "https://files.example.com/f/0000000000000000"
+              }
+      formatUploadUrl info `shouldBe` "https://files.example.com/f/0000000000000000\n"
 
   describe "filename and content-type sanitisation" $ do
     it "removes path separators and control characters" $ do

@@ -259,7 +259,7 @@ Failures are injected through `StorageHooks` so the tests do not depend on a par
 
 Run the built `pigeon-client` against a test server. Use `readProcessWithExitCode` and a sanitized environment.
 
-- **TEST-230** `upload FILE` succeeds with exit `0`, prints the URL, and omits `expires_in`.
+- **TEST-230** `upload FILE` succeeds with exit `0`, prints only the URL on stdout, and omits `expires_in`. With `--quiet`, progress is suppressed but the URL is still printed.
 - **TEST-231** `upload --expires-in 7d` sends `expires_in=604800`.
 - **TEST-232** `upload --no-compress` succeeds; the server still stores gzip.
 - **TEST-233** `upload --password-stdin` with a 200-byte password succeeds; the file is password-protected.
