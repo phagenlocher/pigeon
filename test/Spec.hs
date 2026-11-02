@@ -62,6 +62,7 @@ import Pigeon.Password
 import Pigeon.Server.Config (ServerConfig (..))
 import Pigeon.Server.Db
 import Pigeon.Server.Storage
+import Pigeon.Server.Sweeper (SweepCounts (..), sweepShouldLog)
 import Pigeon.Streaming
 import Pigeon.Types
 import Support
@@ -560,6 +561,20 @@ main = hspec $ do
       deleted `shouldBe` [fileId]
       allFiles db `shouldReturn` []
       closeDb db
+
+  describe "sweeper logging" $ do
+    let idle :: SweepCounts
+        idle = SweepCounts 0 0 0
+    it "stays silent on an idle sweep" $
+      sweepShouldLog False idle `shouldBe` False
+    it "logs an idle sweep when verbose" $
+      sweepShouldLog True idle `shouldBe` True
+    it "logs a sweep that removed expired rows" $
+      sweepShouldLog False (SweepCounts 1 0 0) `shouldBe` True
+    it "logs a sweep that removed orphan blobs" $
+      sweepShouldLog False (SweepCounts 0 1 0) `shouldBe` True
+    it "logs a sweep that removed temp files" $
+      sweepShouldLog False (SweepCounts 0 0 1) `shouldBe` True
 
   describe "path safety" $ do
     it "creates private storage directories" $ withTempDataDir $ \dir -> do

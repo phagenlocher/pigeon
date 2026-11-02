@@ -349,7 +349,7 @@ One line per request:
 - **SRV-151** Never log headers, `Authorization`, `X-Pigeon-Password`, cookies, or form bodies.
 - **SRV-152** Never log the token or password anywhere.
 - **SRV-153** `--quiet` disables request logs but not startup or error logs.
-- **SRV-154** `--verbose` enables debug logs (for example, sweep timings).
+- **SRV-154** `--verbose` enables debug logs (for example, sweep timings) and idle sweep summaries.
 - **SRV-155** Response byte counts are logged when known; do not buffer a response to measure it.
 
 ### 10.2 Application log
@@ -368,6 +368,7 @@ ERROR request id=... cause="..."
 - **SRV-157** Delete logs include only the ID.
 - **SRV-158** Unexpected errors log the exception type and message server-side; clients get a generic response.
 - **SRV-159** Startup logs redact the token.
+- **SRV-166** A sweep that removes nothing logs no summary unless `--verbose` is enabled.
 
 ## 11. Graceful shutdown
 

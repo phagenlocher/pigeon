@@ -1,5 +1,7 @@
 -- | Expiry sweeping and startup reconciliation.
 module Pigeon.Server.Sweeper (
+  SweepCounts (..),
+  sweepShouldLog,
   startSweeper,
   sweepOnce,
   reconcile,
@@ -10,7 +12,7 @@ module Pigeon.Server.Sweeper (
 import Control.Concurrent (threadDelay)
 import Control.Concurrent.Async (Async, async)
 import Control.Exception.Safe (SomeException, catch)
-import Control.Monad (forM_, forever)
+import Control.Monad (forM_, forever, when)
 import Control.Monad.IO.Class (liftIO)
 import Control.Monad.Reader (ask)
 import Data.Set qualified as Set
@@ -37,6 +39,24 @@ import Pigeon.Server.Storage (
   removeIfExists,
  )
 import Pigeon.Types (FileId (..))
+
+-- | Counts reported by one sweep pass.
+data SweepCounts = SweepCounts
+  { sweepExpiredRows :: !Int,
+    sweepOrphanBlobs :: !Int,
+    sweepTempFiles :: !Int
+  }
+  deriving (Eq, Show)
+
+{- | Whether a sweep summary should be logged. An idle sweep stays silent
+unless verbose logging is enabled.
+-}
+sweepShouldLog :: Bool -> SweepCounts -> Bool
+sweepShouldLog verbose counts =
+  verbose
+    || sweepExpiredRows counts > 0
+    || sweepOrphanBlobs counts > 0
+    || sweepTempFiles counts > 0
 
 {- | Start the background sweeper. The caller must cancel it before closing
 the database.
@@ -69,18 +89,21 @@ sweepOnce = do
   liftIO $ forM_ deleted (deleteBlob (aeStorage env))
   orphans <- cleanupOrphans now
   temps <- cleanupTempFiles now
-  logger <- askLogger
-  liftIO
-    $ logInfo logger
-    $ "sweep expired_rows="
-      <> T.pack (show (length deleted))
-      <> " expired_blobs="
-      <> T.pack (show (length deleted))
-      <> " orphan_blobs="
-      <> T.pack (show orphans)
-      <> " temp_files="
-      <> T.pack (show temps)
-      <> " errors=0"
+  let counts :: SweepCounts
+      counts = SweepCounts (length deleted) orphans temps
+  when (sweepShouldLog (scVerbose (aeConfig env)) counts) $ do
+    logger <- askLogger
+    liftIO
+      $ logInfo logger
+      $ "sweep expired_rows="
+        <> T.pack (show (sweepExpiredRows counts))
+        <> " expired_blobs="
+        <> T.pack (show (sweepExpiredRows counts))
+        <> " orphan_blobs="
+        <> T.pack (show (sweepOrphanBlobs counts))
+        <> " temp_files="
+        <> T.pack (show (sweepTempFiles counts))
+        <> " errors=0"
 
 {- | Startup reconciliation. Removes stale temp files, old orphan blobs, and
 rows whose blob is missing.
