@@ -125,6 +125,14 @@ Tests must assert behavior, not implementation details. Do not weaken a test to 
 - **TEST-102** `ApiErrorEnvelope` serializes to `{"error":{"code":"...","message":"..."}}`.
 - **TEST-103** No API response contains `password_hash`, salt, digest, or `size_stored`.
 
+### 3.9 Public URL derivation
+
+- **TEST-104** The default public URL uses `--host` and includes a non-default port: `https`, host `example.com`, port `9999` → `https://example.com:9999`.
+- **TEST-105** The default public URL omits only the scheme-default port: `http` port `80` and `https` port `443`.
+- **TEST-106** IPv6 bind hosts are bracketed: `::1` → `https://[::1]:9999`.
+- **TEST-107** Wildcard bind hosts fall back to `127.0.0.1` and take the warning path.
+- **TEST-108** An explicit `--public-url` preserves a non-default port and removes a scheme-default port during normalization.
+
 ## 4. Storage tests
 
 ### 4.1 SQLite configuration and durability

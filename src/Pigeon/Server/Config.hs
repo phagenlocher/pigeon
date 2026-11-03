@@ -3,11 +3,13 @@ module Pigeon.Server.Config (
   ServerConfig (..),
   TlsMode (..),
   defaultServerConfig,
+  derivePublicUrl,
+  isWildcardHost,
   parseServerConfig,
   validateServerConfig,
 ) where
 
-import Control.Monad (unless, when)
+import Control.Monad (when)
 import Data.Int (Int64)
 import Data.Maybe (fromMaybe, isJust)
 import Data.String (fromString)
@@ -79,6 +81,49 @@ defaultServerConfig =
       scQuiet = False,
       scVerbose = False
     }
+
+-- | Scheme used to build share links for a TLS mode.
+publicScheme :: TlsMode -> Text
+publicScheme TlsDisabled = "http"
+publicScheme TlsEnabled{} = "https"
+
+{- | Whether a host is a wildcard bind address that cannot appear in a public
+share link.
+-}
+isWildcardHost :: String -> Bool
+isWildcardHost host =
+  host `elem` ["*", "*4", "!4", "*6", "!6", "0.0.0.0", "::", "0:0:0:0:0:0:0:0"]
+
+{- | Build the default public base URL from the bind host and port.
+
+The port is included unless the browser can infer it from the scheme (@80@ for
+@http@, @443@ for @https@). Wildcard bind addresses fall back to @127.0.0.1@
+because they cannot appear in a share link. IPv6 literals are bracketed.
+-}
+derivePublicUrl :: TlsMode -> String -> Int -> Text
+derivePublicUrl tlsMode host port =
+  scheme <> "://" <> renderHost publicHost <> portSuffix
+ where
+  scheme :: Text
+  scheme = publicScheme tlsMode
+
+  publicHost :: String
+  publicHost = if isWildcardHost host then "127.0.0.1" else host
+
+  portSuffix :: Text
+  portSuffix
+    | scheme == "http" && port == 80 = ""
+    | scheme == "https" && port == 443 = ""
+    | otherwise = ":" <> T.pack (show port)
+
+  renderHost :: String -> Text
+  renderHost raw
+    | "[" `T.isPrefixOf` hostText && "]" `T.isSuffixOf` hostText = hostText
+    | ":" `T.isInfixOf` hostText = "[" <> hostText <> "]"
+    | otherwise = hostText
+   where
+    hostText :: Text
+    hostText = T.pack raw
 
 data RawOptions = RawOptions
   { roHost :: Maybe String,
@@ -220,16 +265,22 @@ parseServerConfig = do
       Right normalized -> pure normalized
       Left err -> exitWithText 1 ("error: --public-url: " <> err)
     Nothing -> do
-      let scheme :: Text
-          scheme = case tlsMode of
-            TlsDisabled -> "http"
-            TlsEnabled{} -> "https"
-          url = scheme <> "://127.0.0.1:" <> T.pack (show port)
-      unless (isLoopback host) $
+      let url = derivePublicUrl tlsMode host port
+      when (isWildcardHost host) $
         TIO.hPutStrLn
           stderr
-          "warning: --public-url not set and --host is not loopback; share links may be wrong"
-      pure url
+          "warning: --public-url not set and --host is a wildcard bind address; share links will use 127.0.0.1"
+      case normalizeBaseUrl url of
+        Right normalized -> pure normalized
+        Left err ->
+          exitWithText
+            1
+            ( "error: cannot derive --public-url from --host "
+                <> T.pack host
+                <> ": "
+                <> err
+                <> "; set --public-url explicitly"
+            )
 
   validateServerConfig
     ServerConfig
@@ -248,9 +299,6 @@ parseServerConfig = do
         scQuiet = roQuiet raw,
         scVerbose = roVerbose raw
       }
- where
-  isLoopback :: String -> Bool
-  isLoopback h = h `elem` ["127.0.0.1", "localhost", "::1", "0:0:0:0:0:0:0:1"]
 
 -- | Parse a command-line value or exit with a @1@ status naming the option.
 parseOrExit :: Text -> Either Text a -> IO a

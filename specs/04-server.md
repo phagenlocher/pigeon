@@ -100,12 +100,14 @@ Each flag has an environment fallback. Command-line flags take precedence.
 
 - **SRV-020** `--public-url` must be an absolute `http` or `https` URL with no query or fragment.
 - **SRV-021** A trailing slash is removed during normalization.
-- **SRV-022** If omitted, the default is:
-  - `http://127.0.0.1:<port>` when TLS is disabled;
-  - `https://127.0.0.1:<port>` when TLS is enabled.
-- **SRV-023** If the default is used and `--host` is not a loopback address, log a warning that share links may be wrong.
+- **SRV-022** If omitted, the default is `http(s)://<host>:<port>`, where:
+  - `<host>` is `--host`;
+  - IPv6 literals are enclosed in brackets;
+  - `<port>` is omitted only when it is the default for the scheme (`80` for `http`, `443` for `https`).
+- **SRV-023** If the derived default is used and `--host` is a wildcard bind address (`*`, `*4`, `!4`, `*6`, `!6`, `0.0.0.0`, `::`), use `127.0.0.1` instead and log a warning that share links will use loopback.
 - **SRV-024** `X-Forwarded-*` headers are not trusted. Behind a reverse proxy, set `--public-url` explicitly.
 - **SRV-025** `FileInfo.url` is `<public-url>/f/<id>`.
+- **SRV-026** The derived default must normalize as a valid base URL; otherwise startup fails and the operator must set `--public-url`.
 
 ### 2.6 Other validation
 
