@@ -67,6 +67,7 @@ Each flag has an environment fallback. Command-line flags take precedence.
 | `--token` | `PIGEON_TOKEN` |
 | `--tls-cert` | `PIGEON_TLS_CERT` |
 | `--tls-key` | `PIGEON_TLS_KEY` |
+| `--no-tls` | `PIGEON_NO_TLS` |
 | `--public-url` | `PIGEON_PUBLIC_URL` |
 | `--default-expiry` | `PIGEON_DEFAULT_EXPIRY` |
 | `--max-expiry` | `PIGEON_MAX_EXPIRY` |
@@ -113,7 +114,7 @@ Each flag has an environment fallback. Command-line flags take precedence.
 - **SRV-031** `--sweep-interval` must be at least `1s`.
 - **SRV-032** `--password-hash-iterations` must be `100000 .. 10000000`.
 - **SRV-033** `--max-upload-size` is a non-negative integer byte count; `0` means unlimited.
-- **SRV-034** `--no-tls` is mutually exclusive with `--tls-cert` and `--tls-key`.
+- **SRV-034** `--no-tls`, or a truthy `PIGEON_NO_TLS`, is mutually exclusive with `--tls-cert` and `--tls-key`.
 - **SRV-035** If TLS is enabled, both `--tls-cert` and `--tls-key` are required and readable.
 - **SRV-036** The database parent directory must exist or be creatable, must be owned by the service user or root, and must not be writable by group or other users.
 - **SRV-037** The data directory must be writable; otherwise startup fails.
@@ -127,10 +128,11 @@ Each flag has an environment fallback. Command-line flags take precedence.
 - **SRV-042** The key must be an unencrypted PEM private key. Encrypted keys are not supported in v1.
 - **SRV-043** TLS certificate material is read once at startup. Rotation requires a restart.
 - **SRV-044** Do not weaken `warp-tls` defaults (protocol versions, cipher suites).
-- **SRV-045** `--no-tls` logs a prominent warning: `WARNING: TLS disabled; tokens and passwords are transmitted in plaintext`.
+- **SRV-045** `--no-tls`, including when enabled by `PIGEON_NO_TLS`, logs a prominent warning: `WARNING: TLS disabled; tokens and passwords are transmitted in plaintext`.
 - **SRV-046** When the public URL is `https`, send `Strict-Transport-Security: max-age=31536000` on HTML and API responses.
 - **SRV-047** A certificate/key read failure is a startup error.
 - **SRV-048** The server does not request client certificates.
+- **SRV-049** `PIGEON_NO_TLS` accepts `1`, `true`, `yes`, or `on` to disable TLS, and `0`, `false`, `no`, or `off` to keep it enabled, case-insensitively. An empty value is ignored; any other value is a usage error (exit `2`).
 
 ## 4. Warp settings
 
