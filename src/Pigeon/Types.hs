@@ -31,7 +31,6 @@ module Pigeon.Types (
   -- * Sanitisation and headers
   lowerAsciiChar,
   sanitizeFilename,
-  sanitizeContentType,
   contentDisposition,
   asciiFallbackFilename,
   percentEncodeRfc5987,
@@ -126,7 +125,6 @@ data FileInfo = FileInfo
   { fiId :: FileId,
     fiFilename :: Text,
     fiSize :: Int64,
-    fiContentType :: Text,
     fiCreatedAt :: UTCTime,
     fiExpiresAt :: UTCTime,
     fiHasPassword :: Bool,
@@ -155,7 +153,6 @@ newtype ApiErrorEnvelope = ApiErrorEnvelope {unApiErrorEnvelope :: ApiError}
 data StoredFile = StoredFile
   { sfId :: FileId,
     sfFilename :: Text,
-    sfContentType :: Text,
     sfSize :: Int64,
     sfStoredSize :: Int64,
     sfPasswordHash :: Maybe Text,
@@ -170,7 +167,6 @@ instance ToJSON FileInfo where
       [ "id" .= fiId,
         "filename" .= fiFilename,
         "size" .= fiSize,
-        "contentType" .= fiContentType,
         "createdAt" .= formatTimestamp fiCreatedAt,
         "expiresAt" .= formatTimestamp fiExpiresAt,
         "hasPassword" .= fiHasPassword,
@@ -187,7 +183,6 @@ instance FromJSON FileInfo where
       <$> o .: "id"
       <*> o .: "filename"
       <*> o .: "size"
-      <*> o .: "contentType"
       <*> pure createdAt
       <*> pure expiresAt
       <*> o .: "hasPassword"
@@ -295,17 +290,6 @@ truncateUtf8 limit t = T.take (fittingChars 0 t) t
     | ord c <= 0x7ff = 2
     | ord c <= 0xffff = 3
     | otherwise = 4
-
--- | Sanitize a content type. Invalid values become @application/octet-stream@.
-sanitizeContentType :: Text -> Text
-sanitizeContentType t
-  | T.null t = "application/octet-stream"
-  | T.length t > 255 = "application/octet-stream"
-  | not (T.all valid t) = "application/octet-stream"
-  | otherwise = t
- where
-  valid :: Char -> Bool
-  valid c = isAscii c && not (isControl c) && c /= '\r' && c /= '\n'
 
 -- | Build the value of a @Content-Disposition: attachment@ header.
 contentDisposition :: Text -> ByteString

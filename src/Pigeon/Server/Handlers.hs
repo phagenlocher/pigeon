@@ -29,7 +29,7 @@ import Pigeon.Password (
   hashPassword,
   validatePassword,
  )
-import Pigeon.Server.App (App, MonadLogger (..))
+import Pigeon.Server.App (App)
 import Pigeon.Server.Auth (checkBearer)
 import Pigeon.Server.Config (ServerConfig (..))
 import Pigeon.Server.Db
@@ -50,7 +50,6 @@ import Pigeon.Types (
   StoredFile (..),
   isValidFileId,
   pigeonVersion,
-  sanitizeContentType,
   sanitizeFilename,
  )
 
@@ -63,15 +62,13 @@ uploadHandler ::
   Maybe Text ->
   -- | @expires_in@ query parameter in seconds; defaults to the server lifetime.
   Maybe Int64 ->
-  -- | @content_type@ query parameter; sanitised before storage.
-  Maybe Text ->
   -- | @Content-Encoding@ header; @identity@ or @gzip@.
   Maybe Text ->
   -- | @X-Pigeon-Password@ header; protects the download.
   Maybe Text ->
   UploadBody ->
   App FileInfo
-uploadHandler auth rawFilename rawExpires rawContentType rawEncoding rawPassword body = do
+uploadHandler auth rawFilename rawExpires rawEncoding rawPassword body = do
   requireAuth auth
   cfg <- asks aeConfig
   now <- liftIO getCurrentTime
@@ -88,13 +85,6 @@ uploadHandler auth rawFilename rawExpires rawContentType rawEncoding rawPassword
 
   let filename = maybe "file" sanitizeFilename rawFilename
 
-  storedContentType <- case rawContentType of
-    Nothing -> pure "application/octet-stream"
-    Just value
-      | T.null value -> pure "application/octet-stream"
-      | sanitizeContentType value == value -> pure value
-      | otherwise -> throwError (invalidRequest "content_type contains invalid characters")
-
   passwordHash <- case rawPassword of
     Nothing -> pure Nothing
     Just header -> Just . unStoredPasswordHash <$> decodeAndHashPassword header
@@ -109,7 +99,6 @@ uploadHandler auth rawFilename rawExpires rawContentType rawEncoding rawPassword
       request =
         StoreRequest
           { srFilename = filename,
-            srContentType = storedContentType,
             srExpiresAt = expiresAt,
             srPasswordHash = passwordHash,
             srContentEncoding = fmap encodeUtf8 encoding,
@@ -123,10 +112,8 @@ uploadHandler auth rawFilename rawExpires rawContentType rawEncoding rawPassword
     Left err -> throwError (storageError err)
     Right value -> pure value
 
-  logger <- askLogger
-  liftIO
-    $ logInfo logger
-    $ "upload id="
+  logInfo $
+    "upload id="
       <> unFileId (sfId stored)
       <> " size_original="
       <> T.pack (show (sfSize stored))
@@ -173,8 +160,7 @@ deleteHandler fileId auth = do
     then throwError notFound
     else do
       liftIO (deleteBlob (aeStorage env) fileId)
-      logger <- askLogger
-      liftIO $ logInfo logger ("delete id=" <> unFileId fileId)
+      logInfo ("delete id=" <> unFileId fileId)
       pure NoContent
 
 healthHandler :: App Health
@@ -198,7 +184,6 @@ storedToFileInfo cfg StoredFile{..} =
     { fiId = sfId,
       fiFilename = sfFilename,
       fiSize = sfSize,
-      fiContentType = sfContentType,
       fiCreatedAt = sfCreatedAt,
       fiExpiresAt = sfExpiresAt,
       fiHasPassword = isJust sfPasswordHash,

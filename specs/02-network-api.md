@@ -50,7 +50,6 @@ type PigeonAPI =
          :> Header "Authorization" Text
          :> QueryParam "filename" Text
          :> QueryParam "expires_in" Int64
-         :> QueryParam "content_type" Text
          :> Header "Content-Encoding" Text
          :> Header "X-Pigeon-Password" Text
          :> StreamBody NoFraming OctetStream UploadBody
@@ -107,7 +106,6 @@ Query parameters:
 | --- | --- | --- | --- |
 | `filename` | UTF-8 text | No | Display filename. Default `file`. Sanitized by the server. |
 | `expires_in` | integer seconds | No | Lifetime. If omitted, the server's default expiry applies. |
-| `content_type` | ASCII text | No | Original content type. Default `application/octet-stream`. |
 
 Headers:
 
@@ -151,7 +149,6 @@ Response body:
   "id": "7q3m9x2k4v8p1c6d",
   "filename": "report.pdf",
   "size": 12345678,
-  "contentType": "application/pdf",
   "createdAt": "2026-10-31T10:00:00Z",
   "expiresAt": "2026-11-07T10:00:00Z",
   "hasPassword": true,
@@ -226,7 +223,7 @@ Password form submission.
 Every successful `/f/{id}` file response sets:
 
 ```
-Content-Type: <sanitized stored content type>
+Content-Type: application/octet-stream
 Content-Disposition: attachment; filename="<ascii fallback>"; filename*=UTF-8''<percent-encoded UTF-8 filename>
 X-Content-Type-Options: nosniff
 Cache-Control: no-store
@@ -239,7 +236,7 @@ Vary: Accept-Encoding
 - **NET-070** `Content-Disposition` is always `attachment`.
 - **NET-071** The ASCII fallback replaces non-ASCII, quote, backslash, CR, and LF characters with `_`.
 - **NET-072** The `filename*` value is RFC 5987 percent-encoded UTF-8.
-- **NET-073** The stored content type is sanitized at upload time. If it contains control characters, CR, LF, or non-ASCII bytes, the server substitutes `application/octet-stream`.
+- **NET-073** Every file response uses `Content-Type: application/octet-stream`; the service does not store or accept a user-supplied content type.
 - **NET-074** A `Content-Encoding: gzip` response includes `Content-Length: <size_stored>`.
 - **NET-075** An identity response has no `Content-Length` and is sent with chunked transfer encoding.
 
@@ -311,7 +308,7 @@ curl -sS \
   -H "Authorization: Bearer $PIGEON_TOKEN" \
   -H "Content-Type: application/octet-stream" \
   --data-binary @report.pdf \
-  "https://files.example.com/api/v1/files?filename=report.pdf&content_type=application%2Fpdf"
+  "https://files.example.com/api/v1/files?filename=report.pdf"
 ```
 
 ### 8.2 Upload with explicit expiry and gzip
@@ -390,7 +387,7 @@ X-Pigeon-Password: Y29ycmVjdCBob3JzZSBiYXR0ZXJ5IHN0YXBsZQ
 ## 10. Compatibility and versioning
 
 - **NET-120** Adding an optional query parameter or response field is backward compatible within `v1`.
-- **NET-121** Removing/renaming a field, changing a status code, or changing compression semantics requires `/api/v2`.
+- **NET-121** Removing/renaming a field, changing a status code, or changing compression semantics normally requires `/api/v2`. The removal of `content_type` and `contentType` is a deliberate v1 break; Pigeon makes no backwards-compatibility promise for metadata clients.
 - **NET-122** File IDs are opaque. Clients must not parse them beyond validating the alphabet for local sanity checks.
 - **NET-123** The `url` field is authoritative for sharing; clients must not construct URLs from the base URL and ID when `url` is present.
 

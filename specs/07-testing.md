@@ -52,7 +52,7 @@ Tests must assert behavior, not implementation details. Do not weaken a test to 
 - **TEST-026** Reject: empty, `0`, `-1h`, `1.5h`, `1h `, `h`, `1x`, `1h2`, overflow beyond `Int64`.
 - **TEST-027** QuickCheck: any accepted duration round-trips through seconds and back to a normalized form.
 
-### 3.2 Filename and content-type sanitization
+### 3.2 Filename sanitization
 
 - **TEST-030** `../../etc/passwd` becomes a safe display name; no path separators remain.
 - **TEST-031** CR/LF/NUL and other control characters become `_`.
@@ -60,7 +60,6 @@ Tests must assert behavior, not implementation details. Do not weaken a test to 
 - **TEST-033** `...` becomes `file`.
 - **TEST-034** A 300-byte UTF-8 name is truncated at a character boundary to <= 255 bytes.
 - **TEST-035** An empty name becomes `file`.
-- **TEST-036** `text/plain\r\nX-Evil: yes` becomes `application/octet-stream`.
 - **TEST-037** Unicode filenames survive storage and appear correctly in `filename*`.
 
 ### 3.3 File IDs
@@ -203,7 +202,6 @@ Failures are injected through `StorageHooks` so the tests do not depend on a par
 - **TEST-171** Upload with `expires_in = 604800` returns the expected expiry.
 - **TEST-172** `expires_in = 0`, negative, non-integer, and above `max_expiry` → `400`.
 - **TEST-173** `filename` defaults to `file` when omitted.
-- **TEST-174** `content_type` defaults to `application/octet-stream`.
 - **TEST-175** A Unicode filename round-trips through upload and list.
 - **TEST-176** List returns newest first and excludes expired files.
 - **TEST-177** List is empty for a fresh server.
@@ -217,7 +215,7 @@ Failures are injected through `StorageHooks` so the tests do not depend on a par
 - **TEST-182** `HEAD /f/:id` returns the same headers as `GET` and an empty body.
 - **TEST-183** Unknown/deleted/expired ID → `404` HTML with no ID echo.
 - **TEST-184** `Content-Disposition` is attachment and includes `filename*`.
-- **TEST-185** `X-Content-Type-Options`, `Cache-Control`, `Referrer-Policy`, `X-Robots-Tag`, `X-Frame-Options`, and `Vary` are present.
+- **TEST-185** `Content-Type: application/octet-stream`, `X-Content-Type-Options`, `Cache-Control`, `Referrer-Policy`, `X-Robots-Tag`, `X-Frame-Options`, and `Vary` are present.
 - **TEST-186** A request with `Range` returns `200` and the full file.
 - **TEST-187** An unsupported method (`PUT`) → `405` with `Allow: GET, HEAD, POST`.
 - **TEST-188** `robots.txt` returns the disallow-all body.
@@ -259,7 +257,7 @@ Failures are injected through `StorageHooks` so the tests do not depend on a par
 
 Run the built `pigeon-client` against a test server. Use `readProcessWithExitCode` and a sanitized environment.
 
-- **TEST-230** `upload FILE` succeeds with exit `0`, prints the URL, and omits `expires_in`.
+- **TEST-230** `upload FILE` succeeds with exit `0`, prints only the URL on stdout, and omits `expires_in`. With `--quiet`, progress is suppressed but the URL is still printed.
 - **TEST-231** `upload --expires-in 7d` sends `expires_in=604800`.
 - **TEST-232** `upload --no-compress` succeeds; the server still stores gzip.
 - **TEST-233** `upload --password-stdin` with a 200-byte password succeeds; the file is password-protected.
@@ -271,9 +269,7 @@ Run the built `pigeon-client` against a test server. Use `readProcessWithExitCod
 - **TEST-239** `list` prints a table with ID, name, size, expiry, remaining, and password.
 - **TEST-240** `--json list` prints a valid array and preserves order.
 - **TEST-241** `--json upload` prints a valid `FileInfo` object.
-- **TEST-242** `delete --yes` removes the file and exits `0`.
-- **TEST-243** `delete` with a PTY answering `n` exits `8` and deletes nothing. Use a PTY helper; this may be marked manual if the test environment cannot allocate one.
-- **TEST-244** `delete` with a non-TTY stdin and no `--yes` exits `2`.
+- **TEST-242** `delete` removes the file and exits `0`.
 - **TEST-245** `delete` continues after one failure and reports all results.
 - **TEST-246** A plain HTTP server URL with a token prints the warning.
 - **TEST-247** `--quiet` suppresses progress but not errors or the plaintext warning.
@@ -329,10 +325,10 @@ hlint src app test
 
 ### 10.1 App monad and logging
 
-- **TEST-284** `askLogger` returns the logger from the ambient `AppEnv`; a test runs `App` against a recording logger and observes the same logger instance.
+- **TEST-284** `askLogger` returns the logger from the ambient `AppEnv`; a test runs `App` against a recording logger and observes the same logger instance. `logInfo` and the other level functions call `askLogger` and write through that logger without an explicit `Logger` argument.
 - **TEST-285** A `ServerError` thrown inside `App` is converted by `appToHandler` into the corresponding HTTP status and JSON error body.
 - **TEST-286** Modules do not import `Control.Exception` or `Control.Exception.Base`; `.hlint.yaml` restricts them, so `hlint` fails if they do.
-- **TEST-287** A request handled through the raw `/f/:id` application runs in `App` and logs through `askLogger` without a `Logger` argument.
+- **TEST-287** A request handled through the raw `/f/:id` application runs in `App` and logs through the `MonadLogger`-constrained `logWarn`/`logError` functions without a `Logger` argument.
 
 ## 11. Acceptance matrix
 
@@ -370,5 +366,4 @@ Run before a release:
 14. Verify `robots.txt` and `X-Robots-Tag`.
 15. Run the CLI against a plain HTTP dev server; verify the warning.
 16. Verify `--insecure` against a self-signed certificate and that the default fails.
-17. Verify `delete` confirmation, `--yes`, and non-TTY behavior.
-18. Verify `--json` output with `jq`.
+17. Verify `--json` output with `jq`.

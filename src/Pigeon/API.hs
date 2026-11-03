@@ -28,7 +28,6 @@ type PigeonAPI =
       :> Header "Authorization" Text
       :> QueryParam "filename" Text
       :> QueryParam "expires_in" Int64
-      :> QueryParam "content_type" Text
       :> Header "Content-Encoding" Text
       :> Header "X-Pigeon-Password" Text
       :> StreamBody NoFraming OctetStream UploadBody

@@ -148,7 +148,7 @@ uploadRaw :: ClientEnv -> Text -> ByteString -> IO FileInfo
 uploadRaw env filename bytes =
   expectRight
     =<< runClientM
-      (uploadCall (Just authHeader) (Just filename) Nothing Nothing Nothing Nothing (yield bytes))
+      (uploadCall (Just authHeader) (Just filename) Nothing Nothing Nothing (yield bytes))
       env
 
 uploadGzip :: ClientEnv -> Text -> ByteString -> IO FileInfo
@@ -158,7 +158,6 @@ uploadGzip env filename bytes =
       ( uploadCall
           (Just authHeader)
           (Just filename)
-          Nothing
           Nothing
           (Just "gzip")
           Nothing
@@ -175,21 +174,21 @@ uploadGzipRaw :: ClientEnv -> Text -> ByteString -> IO FileInfo
 uploadGzipRaw env filename bytes =
   expectRight
     =<< runClientM
-      (uploadCall (Just authHeader) (Just filename) Nothing Nothing (Just "gzip") Nothing (yield bytes))
+      (uploadCall (Just authHeader) (Just filename) Nothing (Just "gzip") Nothing (yield bytes))
       env
 
 uploadWithExpires :: ClientEnv -> Text -> Int64 -> ByteString -> IO FileInfo
 uploadWithExpires env filename expires bytes =
   expectRight
     =<< runClientM
-      (uploadCall (Just authHeader) (Just filename) (Just expires) Nothing Nothing Nothing (yield bytes))
+      (uploadCall (Just authHeader) (Just filename) (Just expires) Nothing Nothing (yield bytes))
       env
 
 uploadWithExpiresEither :: ClientEnv -> Text -> Int64 -> IO (Either Int FileInfo)
 uploadWithExpiresEither env filename expires = do
   result <-
     runClientM
-      (uploadCall (Just authHeader) (Just filename) (Just expires) Nothing Nothing Nothing (yield "x"))
+      (uploadCall (Just authHeader) (Just filename) (Just expires) Nothing Nothing (yield "x"))
       env
   pure $ case result of
     Right info -> Right info
@@ -228,7 +227,6 @@ uploadWithPassword env filename password bytes =
           (Just filename)
           Nothing
           Nothing
-          Nothing
           (Just (encodePassword password))
           (yield bytes)
       )
@@ -240,13 +238,12 @@ uploadCall ::
   Maybe Int64 ->
   Maybe Text ->
   Maybe Text ->
-  Maybe Text ->
   UploadBody ->
   ClientM FileInfo
-uploadCall auth filename expires contentType encoding password body =
+uploadCall auth filename expires encoding password body =
   let (upload :<|> _list :<|> _delete :<|> _health) =
         SC.client (Proxy :: Proxy PigeonAPI)
-   in upload auth filename expires contentType encoding password body
+   in upload auth filename expires encoding password body
 
 encodePassword :: Text -> Text
 encodePassword = extractBase64 . B64URL.encodeBase64Unpadded . encodeUtf8

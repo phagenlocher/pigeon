@@ -1,5 +1,7 @@
 -- | Expiry sweeping and startup reconciliation.
 module Pigeon.Server.Sweeper (
+  SweepCounts (..),
+  sweepShouldLog,
   startSweeper,
   sweepOnce,
   reconcile,
@@ -10,7 +12,7 @@ module Pigeon.Server.Sweeper (
 import Control.Concurrent (threadDelay)
 import Control.Concurrent.Async (Async, async)
 import Control.Exception.Safe (SomeException, catch)
-import Control.Monad (forM_, forever)
+import Control.Monad (forM_, forever, when)
 import Control.Monad.IO.Class (liftIO)
 import Control.Monad.Reader (ask)
 import Data.Set qualified as Set
@@ -18,7 +20,7 @@ import Data.Text qualified as T
 import Data.Time (UTCTime, diffUTCTime, getCurrentTime)
 import System.Directory (getModificationTime)
 
-import Pigeon.Server.App (App, MonadLogger (..), runApp)
+import Pigeon.Server.App (App, runApp)
 import Pigeon.Server.Config (ServerConfig (..))
 import Pigeon.Server.Db (
   allIds,
@@ -27,7 +29,7 @@ import Pigeon.Server.Db (
   expiredIds,
  )
 import Pigeon.Server.Env (AppEnv (..))
-import Pigeon.Server.Log (logInfo, logWarn)
+import Pigeon.Server.Log (LogLevel (..), logInfo, logWarn, writeLog)
 import Pigeon.Server.Storage (
   blobExists,
   blobPath,
@@ -37,6 +39,24 @@ import Pigeon.Server.Storage (
   removeIfExists,
  )
 import Pigeon.Types (FileId (..))
+
+-- | Counts reported by one sweep pass.
+data SweepCounts = SweepCounts
+  { sweepExpiredRows :: !Int,
+    sweepOrphanBlobs :: !Int,
+    sweepTempFiles :: !Int
+  }
+  deriving (Eq, Show)
+
+{- | Whether a sweep summary should be logged. An idle sweep stays silent
+unless verbose logging is enabled.
+-}
+sweepShouldLog :: Bool -> SweepCounts -> Bool
+sweepShouldLog verbose counts =
+  verbose
+    || sweepExpiredRows counts > 0
+    || sweepOrphanBlobs counts > 0
+    || sweepTempFiles counts > 0
 
 {- | Start the background sweeper. The caller must cancel it before closing
 the database.
@@ -49,13 +69,12 @@ startSweeper = do
     threadDelay (fromIntegral (seconds * 1000000))
     result <- runApp env (sweepOnce `catch` logSweepFailure)
     case result of
-      Left serverError -> logWarn (aeLogger env) ("sweep error: " <> T.pack (show serverError))
+      Left serverError -> writeLog (aeLogger env) Warn ("sweep error: " <> T.pack (show serverError))
       Right () -> pure ()
  where
   logSweepFailure :: SomeException -> App ()
-  logSweepFailure (err :: SomeException) = do
-    logger <- askLogger
-    liftIO (logWarn logger ("sweep failed: " <> T.pack (show err)))
+  logSweepFailure (err :: SomeException) =
+    logWarn ("sweep failed: " <> T.pack (show err))
 
 {- | One expiry sweep: commit row deletions, then unlink blobs outside the DB
 lock, then clean orphans and stale temp files.
@@ -69,17 +88,18 @@ sweepOnce = do
   liftIO $ forM_ deleted (deleteBlob (aeStorage env))
   orphans <- cleanupOrphans now
   temps <- cleanupTempFiles now
-  logger <- askLogger
-  liftIO
-    $ logInfo logger
+  let counts :: SweepCounts
+      counts = SweepCounts (length deleted) orphans temps
+  when (sweepShouldLog (scVerbose (aeConfig env)) counts)
+    $ logInfo
     $ "sweep expired_rows="
-      <> T.pack (show (length deleted))
+      <> T.pack (show (sweepExpiredRows counts))
       <> " expired_blobs="
-      <> T.pack (show (length deleted))
+      <> T.pack (show (sweepExpiredRows counts))
       <> " orphan_blobs="
-      <> T.pack (show orphans)
+      <> T.pack (show (sweepOrphanBlobs counts))
       <> " temp_files="
-      <> T.pack (show temps)
+      <> T.pack (show (sweepTempFiles counts))
       <> " errors=0"
 
 {- | Startup reconciliation. Removes stale temp files, old orphan blobs, and
@@ -92,13 +112,10 @@ reconcile = do
   removedTemps <- cleanupTempFiles now
   removedOrphans <- cleanupOrphans now
   missing <- liftIO (deleteRowsMissingBlob (aeDb env) (blobExists (aeStorage env)))
-  logger <- askLogger
-  liftIO $
-    forM_ missing $ \fileId ->
-      logWarn logger ("removed row with missing blob id=" <> unFileId fileId)
-  liftIO
-    $ logInfo logger
-    $ "reconcile temp_files="
+  forM_ missing $ \fileId ->
+    logWarn ("removed row with missing blob id=" <> unFileId fileId)
+  logInfo $
+    "reconcile temp_files="
       <> T.pack (show removedTemps)
       <> " orphan_blobs="
       <> T.pack (show removedOrphans)

@@ -56,11 +56,20 @@ import Pigeon.Client.Config (
   PasswordSource (..),
   UploadOptions (..),
  )
+import Pigeon.Client.Output (
+  estimateEta,
+  formatEta,
+  formatRate,
+  formatUploadUrl,
+  progressLineVisible,
+  transferRate,
+ )
 import Pigeon.Duration
 import Pigeon.Password
 import Pigeon.Server.Config (ServerConfig (..))
 import Pigeon.Server.Db
 import Pigeon.Server.Storage
+import Pigeon.Server.Sweeper (SweepCounts (..), sweepShouldLog)
 import Pigeon.Streaming
 import Pigeon.Types
 import Support
@@ -72,7 +81,6 @@ uploadOptions noCompress =
     { uoFile = "test.bin",
       uoExpiresIn = Nothing,
       uoName = Nothing,
-      uoContentType = Nothing,
       uoPassword = NoPassword,
       uoNoCompress = noCompress
     }
@@ -96,7 +104,65 @@ main = hspec $ do
         let seconds = fromIntegral (n `mod` 1000000 + 1) :: Int64
          in parseDuration (formatDuration seconds) == Right seconds
 
-  describe "filename and content-type sanitisation" $ do
+  describe "upload ETA" $ do
+    it "is unavailable until a stable estimate is possible" $ do
+      estimateEta 1000 0 10 `shouldBe` Nothing
+      estimateEta 0 100 10 `shouldBe` Nothing
+      estimateEta 1000 100 0.25 `shouldBe` Nothing
+    it "extrapolates from the average throughput" $ do
+      estimateEta 1000 500 5 `shouldBe` Just 5
+      estimateEta 1000 250 5 `shouldBe` Just 15
+    it "rounds partial seconds up so zero means complete" $
+      estimateEta 1000 999 10 `shouldBe` Just 1
+    it "reports zero once every byte has been counted" $
+      estimateEta 1000 1000 0.1 `shouldBe` Just 0
+    it "formats seconds, minutes, and hours" $ do
+      formatEta 0 `shouldBe` "0s"
+      formatEta 45 `shouldBe` "45s"
+      formatEta 60 `shouldBe` "1m 00s"
+      formatEta 125 `shouldBe` "2m 05s"
+      formatEta 3600 `shouldBe` "1h 00m"
+      formatEta 3905 `shouldBe` "1h 05m"
+
+  describe "upload throughput" $ do
+    it "is unavailable until a stable estimate is possible" $ do
+      transferRate 0 10 `shouldBe` Nothing
+      transferRate 100 0.25 `shouldBe` Nothing
+    it "averages bytes over elapsed time" $
+      transferRate 500 5 `shouldBe` Just 100
+    it "formats bytes per second" $ do
+      formatRate 0 `shouldBe` "0 B/s"
+      formatRate 512 `shouldBe` "512 B/s"
+      formatRate 1024 `shouldBe` "1.0 KiB/s"
+      formatRate (4.2 * 1024 * 1024) `shouldBe` "4.2 MiB/s"
+
+  describe "upload progress visibility" $ do
+    it "withholds the line until the ETA exceeds five seconds" $ do
+      progressLineVisible False Nothing `shouldBe` False
+      progressLineVisible False (Just 0) `shouldBe` False
+      progressLineVisible False (Just 5) `shouldBe` False
+      progressLineVisible False (Just 6) `shouldBe` True
+    it "keeps the line visible once it has been drawn" $ do
+      progressLineVisible True Nothing `shouldBe` True
+      progressLineVisible True (Just 0) `shouldBe` True
+      progressLineVisible True (Just 5) `shouldBe` True
+
+  describe "upload output" $ do
+    it "prints only the public URL in the default mode" $ do
+      let info :: FileInfo
+          info =
+            FileInfo
+              { fiId = FileId "0000000000000000",
+                fiFilename = "report.pdf",
+                fiSize = 12,
+                fiCreatedAt = epochToUtc 0,
+                fiExpiresAt = epochToUtc 3600,
+                fiHasPassword = True,
+                fiUrl = "https://files.example.com/f/0000000000000000"
+              }
+      formatUploadUrl info `shouldBe` "https://files.example.com/f/0000000000000000\n"
+
+  describe "filename sanitisation" $ do
     it "removes path separators and control characters" $ do
       sanitizeFilename "../../etc/passwd" `shouldBe` ".._.._etc_passwd"
       sanitizeFilename "a\r\nb\0c" `shouldBe` "a__b_c"
@@ -105,9 +171,6 @@ main = hspec $ do
       sanitizeFilename "..." `shouldBe` "file"
       sanitizeFilename "" `shouldBe` "file"
       BS.length (encodeUtf8 (sanitizeFilename (T.replicate 300 "ä"))) `shouldSatisfy` (<= 255)
-    it "sanitises content types" $ do
-      sanitizeContentType "text/plain" `shouldBe` "text/plain"
-      sanitizeContentType "text/plain\r\nX-Evil: yes" `shouldBe` "application/octet-stream"
     it "builds an attachment header with an RFC 5987 filename" $ do
       let header = contentDisposition "sécret<file>.txt"
       header `shouldSatisfy` BS.isInfixOf "attachment"
@@ -219,7 +282,7 @@ main = hspec $ do
       desiredCapabilities (Upload (uploadOptions True)) `shouldBe` 2
     it "uses two capabilities for list and delete" $ do
       desiredCapabilities List `shouldBe` 2
-      desiredCapabilities (Delete (DeleteOptions [] True)) `shouldBe` 2
+      desiredCapabilities (Delete (DeleteOptions [])) `shouldBe` 2
 
   describe "chunked file source" $ do
     it "reads a handle in the requested chunk size and preserves bytes" $ withTempDataDir $ \dir -> do
@@ -272,7 +335,6 @@ main = hspec $ do
               { fiId = FileId "7q3m9x2k4v8p1c6d",
                 fiFilename = "report.pdf",
                 fiSize = 123,
-                fiContentType = "application/pdf",
                 fiCreatedAt = now,
                 fiExpiresAt = addUTCTime 3600 now,
                 fiHasPassword = True,
@@ -305,7 +367,6 @@ main = hspec $ do
           request =
             StoreRequest
               { srFilename = "data.bin",
-                srContentType = "application/octet-stream",
                 srExpiresAt = addUTCTime 3600 now,
                 srPasswordHash = Nothing,
                 srContentEncoding = Nothing,
@@ -387,7 +448,6 @@ main = hspec $ do
           request =
             StoreRequest
               { srFilename = "bad.gz",
-                srContentType = "application/octet-stream",
                 srExpiresAt = addUTCTime 3600 now,
                 srPasswordHash = Nothing,
                 srContentEncoding = Just "gzip",
@@ -409,7 +469,6 @@ main = hspec $ do
           request =
             StoreRequest
               { srFilename = "big",
-                srContentType = "application/octet-stream",
                 srExpiresAt = addUTCTime 3600 now,
                 srPasswordHash = Nothing,
                 srContentEncoding = Nothing,
@@ -432,7 +491,6 @@ main = hspec $ do
           request =
             StoreRequest
               { srFilename = "bomb.gz",
-                srContentType = "application/octet-stream",
                 srExpiresAt = addUTCTime 3600 now,
                 srPasswordHash = Nothing,
                 srContentEncoding = Just "gzip",
@@ -540,6 +598,20 @@ main = hspec $ do
       allFiles db `shouldReturn` []
       closeDb db
 
+  describe "sweeper logging" $ do
+    let idle :: SweepCounts
+        idle = SweepCounts 0 0 0
+    it "stays silent on an idle sweep" $
+      sweepShouldLog False idle `shouldBe` False
+    it "logs an idle sweep when verbose" $
+      sweepShouldLog True idle `shouldBe` True
+    it "logs a sweep that removed expired rows" $
+      sweepShouldLog False (SweepCounts 1 0 0) `shouldBe` True
+    it "logs a sweep that removed orphan blobs" $
+      sweepShouldLog False (SweepCounts 0 1 0) `shouldBe` True
+    it "logs a sweep that removed temp files" $
+      sweepShouldLog False (SweepCounts 0 0 1) `shouldBe` True
+
   describe "path safety" $ do
     it "creates private storage directories" $ withTempDataDir $ \dir -> do
       let root = dir </> "nested" </> "data"
@@ -632,6 +704,8 @@ main = hspec $ do
       identityResponse <- download port (fiId info) [("Accept-Encoding", "identity")]
       statusCode (statusOf identityResponse) `shouldBe` 200
       bodyOf identityResponse `shouldBe` "hello pigeon"
+      lookup hContentType (responseHeaders identityResponse)
+        `shouldBe` Just "application/octet-stream"
       lookup "Content-Disposition" (responseHeaders identityResponse)
         `shouldSatisfy` maybe False (BS.isInfixOf "attachment")
       gzipResponse <- download port (fiId info) [("Accept-Encoding", "gzip")]
@@ -809,7 +883,6 @@ storeRequest :: UTCTime -> Maybe BS.ByteString -> BS.ByteString -> StoreRequest
 storeRequest now encoding body =
   StoreRequest
     { srFilename = "data.bin",
-      srContentType = "application/octet-stream",
       srExpiresAt = addUTCTime 3600 now,
       srPasswordHash = Nothing,
       srContentEncoding = encoding,

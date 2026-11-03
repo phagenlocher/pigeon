@@ -1,8 +1,12 @@
--- | CLI output formatting: sizes, times, tables, and human messages.
+-- | CLI output formatting: sizes, times, tables, and command results.
 module Pigeon.Client.Output (
   formatSize,
-  formatUtc,
-  formatFileInfo,
+  transferRate,
+  estimateEta,
+  formatEta,
+  formatRate,
+  progressLineVisible,
+  formatUploadUrl,
   formatFileTable,
   truncateName,
   deleteResultJson,
@@ -31,21 +35,93 @@ formatSize bytes
     let rounded = fromIntegral (round (value * 10) :: Int) / 10 :: Double
      in T.pack (show rounded)
 
--- | UTC timestamp in CLI form.
-formatUtc :: UTCTime -> Text
-formatUtc =
-  T.pack . Time.formatTime Time.defaultTimeLocale "%Y-%m-%d %H:%M:%S UTC"
+{- | Minimum elapsed seconds before a throughput or ETA is considered stable
+enough to show.
 
--- | Human-readable upload result.
-formatFileInfo :: UTCTime -> FileInfo -> Text
-formatFileInfo now FileInfo{..} =
-  T.unlines
-    [ "Uploaded " <> fiFilename <> " (" <> formatSize fiSize <> ")",
-      "  id:       " <> showFileId fiId,
-      "  expires:  " <> formatUtc fiExpiresAt <> " (" <> remainingUntil now fiExpiresAt <> ")",
-      "  password: " <> (if fiHasPassword then "yes" else "no"),
-      "  url:      " <> fiUrl
-    ]
+The first redraws of a fast local upload would otherwise extrapolate from a
+tiny sample and display a wildly wrong estimate.
+-}
+minimumEtaElapsedSeconds :: Double
+minimumEtaElapsedSeconds = 0.5
+
+{- | Average throughput in bytes per second since the transfer started.
+
+Returns 'Nothing' while no estimate is possible: no bytes have been counted or
+less than 'minimumEtaElapsedSeconds' has elapsed.
+-}
+transferRate :: Int64 -> Double -> Maybe Double
+transferRate current elapsedSeconds
+  | current <= 0 = Nothing
+  | elapsedSeconds < minimumEtaElapsedSeconds = Nothing
+  | otherwise = Just (fromIntegral current / elapsedSeconds)
+
+{- | Estimate the remaining upload time in seconds from the average throughput
+since the transfer started.
+
+Returns 'Nothing' while no estimate is possible: no bytes have been counted,
+the size is unknown, or less than 'minimumEtaElapsedSeconds' has elapsed.
+Returns @Just 0@ once every byte has been counted.
+-}
+estimateEta :: Int64 -> Int64 -> Double -> Maybe Int64
+estimateEta total current elapsedSeconds
+  | total <= 0 = Nothing
+  | current <= 0 = Nothing
+  | current >= total = Just 0
+  | otherwise =
+      case transferRate current elapsedSeconds of
+        Nothing -> Nothing
+        Just rate ->
+          let remaining :: Double
+              remaining = fromIntegral (total - current)
+           in Just (max 0 (ceiling (remaining / rate)))
+
+-- | Format a remaining-time estimate: @45s@, @1m 05s@, or @1h 05m@.
+formatEta :: Int64 -> Text
+formatEta seconds
+  | seconds < 60 = T.pack (show (max 0 seconds)) <> "s"
+  | seconds < 3600 =
+      let (minutes, rest) = seconds `divMod` 60
+       in T.pack (show minutes) <> "m " <> twoDigits rest <> "s"
+  | otherwise =
+      let (hours, rest) = seconds `divMod` 3600
+          minutes = rest `div` 60
+       in T.pack (show hours) <> "h " <> twoDigits minutes <> "m"
+ where
+  twoDigits :: Int64 -> Text
+  twoDigits value =
+    (if value < 10 then "0" else "") <> T.pack (show value)
+
+-- | Format a throughput in bytes per second: @0 B/s@, @512 B\/s@, or @4.2 MiB\/s@.
+formatRate :: Double -> Text
+formatRate rate = formatSize (round rate) <> "/s"
+
+{- | Minimum ETA, in seconds, before the progress line is drawn.
+
+Fast uploads and the final seconds of a slower one would otherwise flash a
+progress line for no useful reason.
+-}
+minimumVisibleEtaSeconds :: Int64
+minimumVisibleEtaSeconds = 5
+
+{- | Whether the progress line should be drawn, given whether it has already
+been drawn and the current ETA estimate.
+
+The line is withheld until the remaining time exceeds
+'minimumVisibleEtaSeconds'. Once drawn, it stays visible for the rest of the
+upload, including during the final seconds.
+-}
+progressLineVisible :: Bool -> Maybe Int64 -> Bool
+progressLineVisible True _ = True
+progressLineVisible False Nothing = False
+progressLineVisible False (Just seconds) = seconds > minimumVisibleEtaSeconds
+
+{- | Default upload result: the public URL followed by a newline.
+
+The URL is printed exactly as returned by the server and is the only thing
+written to stdout for a successful upload.
+-}
+formatUploadUrl :: FileInfo -> Text
+formatUploadUrl info = fiUrl info <> "\n"
 
 -- | Human-readable list table. Preserves the input order.
 formatFileTable :: UTCTime -> [FileInfo] -> Text

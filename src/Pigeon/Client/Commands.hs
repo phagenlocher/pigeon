@@ -55,9 +55,14 @@ import Pigeon.Client.Config (
  )
 import Pigeon.Client.Output (
   deleteResultJson,
-  formatFileInfo,
+  estimateEta,
+  formatEta,
   formatFileTable,
+  formatRate,
   formatSize,
+  formatUploadUrl,
+  progressLineVisible,
+  transferRate,
  )
 import Pigeon.Password (validatePassword)
 import Pigeon.Streaming (
@@ -135,23 +140,21 @@ runUpload cfg clientApi options = do
         Left failure -> reportFailure cfg failure
         Right passwordHeader -> do
           let filename = fromMaybe (T.pack (takeFileName (uoFile options))) (uoName options)
-              contentType = fromMaybe "application/octet-stream" (uoContentType options)
               compression = if uoNoCompress options then Nothing else Just "gzip"
               authorization = Just ("Bearer " <> secretText (ccToken cfg))
           uploaded <-
             try
               ( withInputFile
                   (uoFile options)
-                  (performUpload cfg clientApi options filename contentType compression passwordHeader authorization)
+                  (performUpload cfg clientApi options filename compression passwordHeader authorization)
               )
           case uploaded :: Either IOException (Either ClientError FileInfo) of
             Left _ -> reportFailure cfg (Failure 7 "file_error" ("cannot read file: " <> T.pack (uoFile options)))
             Right (Left err) -> reportFailure cfg (mapClientError err)
             Right (Right info) -> do
-              now <- getCurrentTime
               if ccJson cfg
                 then LBS.putStr (encode info) >> putStrLn ""
-                else TIO.putStr (formatFileInfo now info)
+                else TIO.putStr (formatUploadUrl info)
               pure 0
 
 {- | Bytes read from the input file per chunk. Larger reads cut syscall and
@@ -165,13 +168,12 @@ performUpload ::
   ClientApi ->
   UploadOptions ->
   Text ->
-  Text ->
   Maybe Text ->
   Maybe Text ->
   Maybe Text ->
   Handle ->
   IO (Either ClientError FileInfo)
-performUpload cfg clientApi options filename contentType compression passwordHeader authorization handle = do
+performUpload cfg clientApi options filename compression passwordHeader authorization handle = do
   totalSize <- fromIntegral <$> getFileSize (uoFile options)
   counter <- newIORef 0
   showProgress <- shouldShowProgress cfg
@@ -184,8 +186,6 @@ performUpload cfg clientApi options filename contentType compression passwordHea
       <> T.pack (show totalSize)
       <> " server="
       <> ccServerText cfg
-      <> " content_type="
-      <> contentType
       <> " compression="
       <> maybe "identity" (const "gzip") compression
   started <- getCurrentTime
@@ -203,7 +203,6 @@ performUpload cfg clientApi options filename contentType compression passwordHea
           authorization
           (Just filename)
           (uoExpiresIn options)
-          (Just contentType)
           compression
           passwordHeader
           body
@@ -305,58 +304,33 @@ runList cfg clientApi = do
 
 runDelete :: ClientConfig -> ClientApi -> DeleteOptions -> IO Int
 runDelete cfg clientApi options = do
-  confirmed <- confirmDelete cfg (doYes options) (length (doIds options))
-  case confirmed of
-    Left code -> pure code
-    Right () -> do
-      let ids = map FileId (doIds options)
-      outcomes <-
-        forM ids $ \fileId -> do
-          result <-
-            runApi clientApi $
-              acDelete (caApi clientApi) fileId (Just ("Bearer " <> secretText (ccToken cfg)))
-          pure (fileId, result)
-      let deleted = [unFileId fileId | (fileId, Right _) <- outcomes]
-          failed =
-            [ (unFileId fileId, mapClientError err)
-            | (fileId, Left err) <- outcomes
-            ]
-      if ccJson cfg
-        then do
-          LBS.putStr
-            ( encode
-                ( deleteResultJson
-                    deleted
-                    [(fileId, failureCode failure, failureMessage failure) | (fileId, failure) <- failed]
-                )
+  let ids = map FileId (doIds options)
+  outcomes <-
+    forM ids $ \fileId -> do
+      result <-
+        runApi clientApi $
+          acDelete (caApi clientApi) fileId (Just ("Bearer " <> secretText (ccToken cfg)))
+      pure (fileId, result)
+  let deleted = [unFileId fileId | (fileId, Right _) <- outcomes]
+      failed =
+        [ (unFileId fileId, mapClientError err)
+        | (fileId, Left err) <- outcomes
+        ]
+  if ccJson cfg
+    then do
+      LBS.putStr
+        ( encode
+            ( deleteResultJson
+                deleted
+                [(fileId, failureCode failure, failureMessage failure) | (fileId, failure) <- failed]
             )
-          putStrLn ""
-        else do
-          forM_ deleted $ \fileId -> TIO.putStrLn ("Deleted " <> fileId)
-          forM_ failed $ \(fileId, failure) ->
-            TIO.hPutStrLn stderr ("error: " <> fileId <> ": " <> failureMessage failure)
-      pure (deleteExitCode failed)
-
-confirmDelete :: ClientConfig -> Bool -> Int -> IO (Either Int ())
-confirmDelete cfg assumeYes count
-  | assumeYes = pure (Right ())
-  | otherwise = do
-      terminal <- hIsTerminalDevice stdin
-      if not terminal
-        then do
-          code <-
-            reportFailure
-              cfg
-              (Failure 2 "usage_error" "confirmation requires --yes when stdin is not a terminal")
-          pure (Left code)
-        else do
-          TIO.hPutStr stderr ("Delete " <> T.pack (show count) <> " files? [y/N] ")
-          hFlush stderr
-          answer <- TIO.getLine
-          pure $
-            if T.toLower (T.strip answer) `elem` ["y", "yes"]
-              then Right ()
-              else Left 8
+        )
+      putStrLn ""
+    else do
+      forM_ deleted $ \fileId -> TIO.putStrLn ("Deleted " <> fileId)
+      forM_ failed $ \(fileId, failure) ->
+        TIO.hPutStrLn stderr ("error: " <> fileId <> ": " <> failureMessage failure)
+  pure (deleteExitCode failed)
 
 deleteExitCode :: [(Text, Failure)] -> Int
 deleteExitCode [] = 0
@@ -430,42 +404,69 @@ progressConduit ::
   Bool -> Text -> Int64 -> IORef Int64 -> ConduitT BS.ByteString BS.ByteString (ResourceT IO) ()
 progressConduit enabled filename total counter
   | not enabled = awaitForever yield
-  | otherwise = go (epochToUtc 0)
+  | otherwise = do
+      started <- liftIO getCurrentTime
+      go False started (epochToUtc 0)
  where
-  go :: UTCTime -> ConduitT BS.ByteString BS.ByteString (ResourceT IO) ()
-  go lastPrint =
+  go :: Bool -> UTCTime -> UTCTime -> ConduitT BS.ByteString BS.ByteString (ResourceT IO) ()
+  go shown started lastPrint =
     await >>= \case
       Nothing -> pure ()
       Just chunk -> do
         now <- liftIO getCurrentTime
         let elapsed :: Double
-            elapsed = realToFrac $ diffUTCTime now lastPrint
+            elapsed = realToFrac (diffUTCTime now lastPrint)
+            elapsedTotal :: Double
+            elapsedTotal = realToFrac (diffUTCTime now started)
             shouldPrintProgress :: Bool
             shouldPrintProgress = elapsed * 1000 >= progressIntervalMs
-        when shouldPrintProgress $ do
-          current <- liftIO (readIORef counter)
-          liftIO (printProgress filename total current)
+        shown' <-
+          if shouldPrintProgress
+            then do
+              current <- liftIO (readIORef counter)
+              liftIO (printProgress shown filename total current elapsedTotal)
+            else pure shown
         yield chunk
-        go (if shouldPrintProgress then now else lastPrint)
+        go shown' started (if shouldPrintProgress then now else lastPrint)
 
-printProgress :: Text -> Int64 -> Int64 -> IO ()
-printProgress filename total current = do
-  let percentage :: Int
+{- | Draw or skip the progress line, returning whether it is now visible.
+
+Once the line has been drawn it stays visible for the rest of the upload, even
+when the ETA falls to the threshold or below.
+-}
+printProgress :: Bool -> Text -> Int64 -> Int64 -> Double -> IO Bool
+printProgress shown filename total current elapsedSeconds =
+  let eta :: Maybe Int64
+      eta = estimateEta total current elapsedSeconds
+      percentage :: Int
       percentage
         | total <= 0 = 100
         | otherwise = min 100 (fromIntegral ((current * 100) `div` total))
+      speed :: Text
+      speed = case transferRate current elapsedSeconds of
+        Nothing -> ""
+        Just rate -> ", " <> formatRate rate
+      etaSegment :: Text
+      etaSegment = case eta of
+        Nothing -> ""
+        Just seconds -> ", ETA " <> formatEta seconds
       detail :: Text
-      detail
-        | total <= 0 = formatSize current
-        | otherwise =
-            formatSize current
-              <> " / "
-              <> formatSize total
-              <> " ("
-              <> T.pack (show percentage)
-              <> "%)"
-  TIO.hPutStr stderr (eraseLine <> "Uploading " <> filename <> ": " <> detail)
-  hFlush stderr
+      detail =
+        formatSize current
+          <> " / "
+          <> formatSize total
+          <> " ("
+          <> T.pack (show percentage)
+          <> "%"
+          <> speed
+          <> etaSegment
+          <> ")"
+   in if progressLineVisible shown eta
+        then do
+          TIO.hPutStr stderr (eraseLine <> "Uploading " <> filename <> ": " <> detail)
+          hFlush stderr
+          pure True
+        else pure False
 
 {- | Erase the in-place progress line so only the command result remains
 (CLI-083). Callers skip this for zero-byte uploads, which never draw a progress

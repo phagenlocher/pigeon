@@ -34,7 +34,7 @@ The API type is defined exactly once in `Pigeon.API` and imported by both binari
 | `Pigeon.Duration` | Parse `7d`, `1d12h`; format remaining time | Know about HTTP or files |
 | `Pigeon.Password` | PBKDF2 hashing/verification via the `password` package | Read configuration or log secrets |
 | `Pigeon.Streaming` | `gzip`/`ungzip` conduits, byte counters, `Accept-Encoding` parsing | Decide policy |
-| `Pigeon.Server.App` | `App` reader monad over `AppEnv`, `MonadLogger` with `askLogger`, safe exception instances | Own configuration or open sockets |
+| `Pigeon.Server.App` | `App` reader monad over `AppEnv`, `MonadLogger` instance, safe exception instances | Own configuration or open sockets |
 | `Pigeon.Server.Config` | Parse/validate server flags and environment | Open sockets or files |
 | `Pigeon.Server.Db` | SQLite connection, schema, migrations, queries | Stream blobs while holding the connection |
 | `Pigeon.Server.PathSafety` | Symlink rejection, private directory creation, descriptor-based permissions | Choose storage policy or open network resources |
@@ -43,7 +43,7 @@ The API type is defined exactly once in `Pigeon.API` and imported by both binari
 | `Pigeon.Server.Web` | `/f/:id` GET/HEAD/POST, HTML form, file streaming | Touch the metadata API endpoints |
 | `Pigeon.Server.Sweeper` | Expiry deletion, orphan reconciliation | Block request handlers |
 | `Pigeon.Server.Auth` | Bearer token parsing and constant-time check | Log the token |
-| `Pigeon.Server.Log` | Request/application logging with redaction | Log headers, queries, passwords |
+| `Pigeon.Server.Log` | `MonadLogger`, `logInfo`/`logWarn`/`logError`/`logDebug`, request logging, redaction | Log headers, queries, passwords |
 | `Pigeon.Client.Api` | HTTP manager, Servant client environment, error mapping | Format output |
 | `Pigeon.Client.Commands` | Upload/list/delete orchestration | Parse global flags |
 | `Pigeon.Client.Output` | Tables, JSON, progress, size/time formatting | Perform network I/O |
@@ -60,7 +60,6 @@ data FileInfo = FileInfo
   { fiId          :: FileId
   , fiFilename    :: Text
   , fiSize        :: Int64
-  , fiContentType :: Text
   , fiCreatedAt   :: UTCTime
   , fiExpiresAt   :: UTCTime
   , fiHasPassword :: Bool
@@ -82,7 +81,6 @@ newtype ApiErrorEnvelope = ApiErrorEnvelope { unApiErrorEnvelope :: ApiError }
 data StoredFile = StoredFile
   { sfId           :: FileId
   , sfFilename     :: Text
-  , sfContentType  :: Text
   , sfSize         :: Int64
   , sfStoredSize   :: Int64
   , sfPasswordHash :: Maybe Text   -- encoded PBKDF2 hash text, or Nothing
@@ -163,7 +161,7 @@ HTTP request body (chunked)
   ▼
 server handler
   │  auth check before consuming body
-  │  validate filename, expiry, content type, password
+  │  validate filename, expiry, and password
   ▼
   ├─ Content-Encoding: gzip ──▶ sinkFile temp (bytes as received)
   │                              │
@@ -370,14 +368,27 @@ No layer returns a raw exception message to an HTTP client.
 All server orchestration runs in `App`, a reader monad over `AppEnv`. Handlers, web requests, the sweeper, and reconciliation must not thread `AppEnv` or `Logger` through every function by hand.
 
 ```haskell
+-- Pigeon.Server.Log
+
+class (MonadIO m) => MonadLogger m where
+  askLogger :: m Logger
+
+logMessage :: (MonadLogger m) => LogLevel -> Text -> m ()
+logMessage level message = do
+  logger <- askLogger
+  liftIO (writeLog logger level message)
+{-# INLINE logMessage #-}
+
+logInfo :: (MonadLogger m) => Text -> m ()
+logInfo = logMessage Info
+
+writeLog :: Logger -> LogLevel -> Text -> IO ()
+
 -- Pigeon.Server.App
 
 newtype App a = App
   { unApp :: ExceptT ServerError (ReaderT AppEnv IO) a
   }
-
-class Monad m => MonadLogger m where
-  askLogger :: m Logger
 
 instance MonadLogger App where
   askLogger = asks aeLogger
@@ -386,7 +397,7 @@ runApp :: AppEnv -> App a -> IO (Either ServerError a)
 ```
 
 - **ARCH-009** `App` derives `MonadIO`, `MonadReader AppEnv`, `MonadError ServerError`, and the `safe-exceptions` classes `MonadThrow`, `MonadCatch`, and `MonadMask`.
-- **ARCH-010** Application code obtains the logger through `askLogger`; it does not take a `Logger` argument merely to pass it down.
+- **ARCH-010** Application code calls `logInfo`, `logWarn`, `logError`, and `logDebug` directly. Each has a `MonadLogger m` constraint, obtains the ambient logger with `askLogger`, and writes through it. Application code never takes a `Logger` argument; only IO layers such as middleware, startup, and storage hooks use `writeLog` with an explicit `Logger`.
 - **ARCH-011** Pure IO layers that must remain testable in IO (`Pigeon.Server.Db`, `Pigeon.Server.Storage`) are called from `App` with `liftIO`; they do not import `Pigeon.Server.App`.
 - **ARCH-012** The Servant API handlers are written as `ServerT FullAPI App` and hoisted to `Handler` with `hoistServer`. The raw `/f/:id` route is an `Application` that runs each request through `runApp`.
 - **ARCH-013** All exception handling uses `Control.Exception.Safe`. Do not import `Control.Exception` in server or client modules.

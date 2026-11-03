@@ -168,7 +168,7 @@ runServer :: ServerConfig -> IO ()
 mkApp    :: AppEnv -> Application
 ```
 
-All server orchestration runs in `App` (`Pigeon.Server.App`), a reader monad over `AppEnv` with `MonadIO`, `MonadReader AppEnv`, `MonadError ServerError`, and the `safe-exceptions` classes. The logger is obtained through `askLogger`, not passed as an argument.
+All server orchestration runs in `App` (`Pigeon.Server.App`), a reader monad over `AppEnv` with `MonadIO`, `MonadReader AppEnv`, `MonadError ServerError`, and the `safe-exceptions` classes. Logging is performed with `logInfo`, `logWarn`, `logError`, and `logDebug` from `Pigeon.Server.Log`; these are constrained by `MonadLogger`, obtain the ambient logger with `askLogger`, and do not require the caller to pass a `Logger`.
 
 `mkApp` composes:
 
@@ -197,7 +197,7 @@ server env =
 - **SRV-063** `robotsHandler` returns the fixed `robots.txt` body.
 - **SRV-064** The gzip middleware is applied only to `/api/` and HTML responses; it is skipped for `/f/` file responses.
 - **SRV-065** Request logging uses the path without the query string.
-- **SRV-066** Handlers, the web route, the sweeper, and reconciliation use `askLogger` from `MonadLogger`; they never receive a `Logger` parameter.
+- **SRV-066** Handlers, the web route, the sweeper, and reconciliation call `logInfo`/`logWarn`/`logError` from `Pigeon.Server.Log`; these functions use `askLogger` internally, so application code never receives a `Logger` parameter.
 - **SRV-067** The raw `/f/:id` application runs each request through `runApp` so DB lookups, password verification, and logging use the same `App` environment.
 - **SRV-068** Exception handling in server code imports `Control.Exception.Safe`, not `Control.Exception`.
 - **SRV-069** A `ServerError` thrown inside `App` becomes the same HTTP response as one thrown from `Handler`; no exception text reaches the client.
@@ -211,7 +211,6 @@ uploadHandler
   :: Maybe Text          -- Authorization
   -> Maybe Text          -- filename
   -> Maybe Int64         -- expires_in
-  -> Maybe Text          -- content_type
   -> Maybe Text          -- Content-Encoding
   -> Maybe Text          -- X-Pigeon-Password
   -> UploadBody
@@ -223,17 +222,16 @@ Algorithm:
 1. **SRV-070** Require a valid bearer token. Return `401` before reading the body.
 2. **SRV-071** Resolve `expires_in`: supplied value, or `default_expiry`. Validate against `max_expiry`.
 3. **SRV-072** Sanitize `filename`. If absent or empty after sanitization, use `file`.
-4. **SRV-073** Validate `content_type`. Absent means `application/octet-stream`. Invalid means `400`.
-5. **SRV-074** Decode `X-Pigeon-Password` if present to bytes, validate base64url and 1–1024 byte length, and decode as UTF-8 without normalization. Invalid UTF-8 is `400 invalid_request`.
-6. **SRV-075** Hash the password with `Pigeon.Password.hashPassword` (PBKDF2-HMAC-SHA512 from the `password` package) using `password_hash_iterations`. This happens before the body is stored so a hashing failure cannot leave a blob.
-7. **SRV-076** Validate `Content-Encoding`: absent/`identity`/`gzip`; otherwise `415`.
-8. **SRV-077** Call `storeUpload` with the stream, metadata, expiry, and encoded password hash.
-9. **SRV-078** Map `StorageError`:
+4. **SRV-074** Decode `X-Pigeon-Password` if present to bytes, validate base64url and 1–1024 byte length, and decode as UTF-8 without normalization. Invalid UTF-8 is `400 invalid_request`.
+5. **SRV-075** Hash the password with `Pigeon.Password.hashPassword` (PBKDF2-HMAC-SHA512 from the `password` package) using `password_hash_iterations`. This happens before the body is stored so a hashing failure cannot leave a blob.
+6. **SRV-076** Validate `Content-Encoding`: absent/`identity`/`gzip`; otherwise `415`.
+7. **SRV-077** Call `storeUpload` with the stream, metadata, expiry, and encoded password hash.
+8. **SRV-078** Map `StorageError`:
    - bad gzip → `400 invalid_request`
    - size limit → `413 payload_too_large`
    - IO/database failure → `500 internal_error`
-10. **SRV-079** Build `FileInfo` with `url = publicUrl <> "/f/" <> id`.
-11. **SRV-080** Return `201` with `Cache-Control: no-store`.
+9. **SRV-079** Build `FileInfo` with `url = publicUrl <> "/f/" <> id`.
+10. **SRV-080** Return `201` with `Cache-Control: no-store`.
 
 Password hashing cost happens only when a password is supplied. An upload without a password does not run PBKDF2.
 
@@ -349,7 +347,7 @@ One line per request:
 - **SRV-151** Never log headers, `Authorization`, `X-Pigeon-Password`, cookies, or form bodies.
 - **SRV-152** Never log the token or password anywhere.
 - **SRV-153** `--quiet` disables request logs but not startup or error logs.
-- **SRV-154** `--verbose` enables debug logs (for example, sweep timings).
+- **SRV-154** `--verbose` enables debug logs (for example, sweep timings) and idle sweep summaries.
 - **SRV-155** Response byte counts are logged when known; do not buffer a response to measure it.
 
 ### 10.2 Application log
@@ -368,6 +366,7 @@ ERROR request id=... cause="..."
 - **SRV-157** Delete logs include only the ID.
 - **SRV-158** Unexpected errors log the exception type and message server-side; clients get a generic response.
 - **SRV-159** Startup logs redact the token.
+- **SRV-166** A sweep that removes nothing logs no summary unless `--verbose` is enabled.
 
 ## 11. Graceful shutdown
 

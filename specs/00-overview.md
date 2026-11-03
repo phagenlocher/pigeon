@@ -28,7 +28,7 @@ There are no user accounts, no per-user ownership, and no roles. Anyone with the
 - **OV-001** An uploader MUST be able to upload a local file of arbitrary size, including files larger than available RAM.
 - **OV-002** An upload MUST be associated with an expiry time. The API may omit the expiry; in that case the server MUST apply its configured default expiry.
 - **OV-003** An uploader SHOULD be able to set a per-file download password. The password MUST NOT be required to upload the file.
-- **OV-004** An uploader MUST be able to set a display filename and content type different from the local path.
+- **OV-004** An uploader MUST be able to set a display filename different from the local path.
 - **OV-005** The server MUST return a stable ID and a public URL for every successful upload.
 - **OV-006** Upload traffic SHOULD be gzip-compressed when the client enables compression.
 - **OV-007** The server MUST store every blob gzip-compressed on disk, regardless of whether the upload arrived compressed.
@@ -81,7 +81,7 @@ There are no user accounts, no per-user ownership, and no roles. Anyone with the
 3. Client omits `expires_in`.
 4. Server applies `--default-expiry` (default `7d`), streams the body to a temp file, stores a gzip blob, and inserts metadata.
 5. Server returns `201` with `FileInfo`, including the absolute public URL and the computed `expiresAt`.
-6. Client prints the URL and expiry.
+6. Client prints the URL.
 
 ### 4.2 Upload with password and explicit expiry
 
@@ -123,7 +123,7 @@ The following are explicitly out of scope for v1. Do not implement them without 
 - **OV-N04** Range requests, resumable downloads, or multi-part uploads.
 - **OV-N05** Deduplication or content-addressed storage.
 - **OV-N06** Encryption of blobs at rest. gzip is compression, not encryption.
-- **OV-N07** Antivirus scanning, content moderation, or file-type validation beyond content-type sanitization.
+- **OV-N07** Antivirus scanning, content moderation, or file-type validation.
 - **OV-N08** Quotas, billing, or per-user storage limits.
 - **OV-N09** S3 or other object-storage backends.
 - **OV-N10** Public API documentation generation, SDKs, or webhooks.

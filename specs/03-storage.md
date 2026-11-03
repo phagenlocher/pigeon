@@ -70,7 +70,6 @@ WAL improves concurrent read/write throughput, but a commit can remain in `pigeo
 CREATE TABLE IF NOT EXISTS files (
     id           TEXT    PRIMARY KEY NOT NULL,
     filename     TEXT    NOT NULL,
-    content_type TEXT    NOT NULL,
     size_original INTEGER NOT NULL CHECK (size_original >= 0),
     size_stored  INTEGER NOT NULL CHECK (size_stored >= 0),
     password_hash TEXT,
@@ -91,7 +90,6 @@ PRAGMA user_version = 1;
 
 - **STORE-030** `id` is the 16-character lowercase Crockford base32 ID. It is the primary key.
 - **STORE-031** `filename` is the sanitized display name, stored as UTF-8 text.
-- **STORE-032** `content_type` is the sanitized content type, stored as ASCII text.
 - **STORE-033** `size_original` is the uncompressed byte length. It is at least 0.
 - **STORE-034** `size_stored` is the gzip blob length. It is at least 0.
 - **STORE-035** `password_hash` is `NULL` when the file has no password. Otherwise it uses the format in section 5.
@@ -139,7 +137,6 @@ sha512:25000:YWJjZGVmZ2hpamtsbW5vcA==:JRElYYrOMe9OIV4LDxaLTgO9ho8fFBVofXoQcdngi7
 ```haskell
 data StoreRequest = StoreRequest
   { srFilename        :: Text
-  , srContentType     :: Text
   , srExpiresAt       :: UTCTime
   , srPasswordHash    :: Maybe Text       -- encoded PBKDF2 hash text, or Nothing
   , srContentEncoding :: Maybe ByteString -- Nothing / "identity" / "gzip"

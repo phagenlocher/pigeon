@@ -20,7 +20,7 @@ import Data.Conduit.Combinators (sourceHandle)
 import Data.Conduit.Combinators qualified as CC
 import Data.Maybe (fromMaybe, isJust, isNothing)
 import Data.Text (Text)
-import Data.Text.Encoding (decodeUtf8', encodeUtf8)
+import Data.Text.Encoding (decodeUtf8')
 import Data.Time (getCurrentTime)
 import Network.HTTP.Types (
   ResponseHeaders,
@@ -60,7 +60,7 @@ import Text.Blaze.Html5 qualified as H
 import Text.Blaze.Html5.Attributes qualified as A
 
 import Pigeon.Password (parseStoredPasswordHash, validatePassword, verifyPassword)
-import Pigeon.Server.App (App, MonadLogger (..), runApp)
+import Pigeon.Server.App (App, runApp)
 import Pigeon.Server.Db (lookupFile)
 import Pigeon.Server.Env (AppEnv (..))
 import Pigeon.Server.Log (logError, logWarn)
@@ -71,7 +71,6 @@ import Pigeon.Types (
   StoredFile (..),
   contentDisposition,
   isValidFileId,
-  sanitizeContentType,
   sanitizeFilename,
  )
 
@@ -129,8 +128,7 @@ handlePost fileId request = do
                     Right () ->
                       case sfPasswordHash stored >>= either (const Nothing) Just . parseStoredPasswordHash of
                         Nothing -> do
-                          logger <- askLogger
-                          liftIO (logError logger ("corrupt password hash for id=" <> unFileId fileId))
+                          logError ("corrupt password hash for id=" <> unFileId fileId)
                           pure (htmlError status500 "The stored file could not be read.")
                         Just storedHash
                           | verifyPassword password storedHash -> serveFile stored request False
@@ -156,8 +154,7 @@ serveFile stored request isHead =
       opened <- liftIO (try (openBlob (aeStorage env) (sfId stored))) :: App (Either IOException Handle)
       case opened of
         Left _ -> do
-          logger <- askLogger
-          liftIO (logWarn logger ("blob missing for id=" <> unFileId (sfId stored)))
+          logWarn ("blob missing for id=" <> unFileId (sfId stored))
           pure notFoundResponse
         Right handle
           | isHead -> do
@@ -181,7 +178,7 @@ chosenEncoding request =
 
 fileHeaders :: StoredFile -> AcceptEncoding -> ResponseHeaders
 fileHeaders stored encoding =
-  [ (hContentType, encodeUtf8 (sanitizeContentType (sfContentType stored))),
+  [ (hContentType, "application/octet-stream"),
     ("Content-Disposition", contentDisposition (sfFilename stored)),
     ("X-Content-Type-Options", "nosniff"),
     (hCacheControl, "no-store"),
