@@ -21,3 +21,6 @@ cabal.project.local
 cabal.project.local~
 .HTF/
 .ghc.environment.*
+
+# Local scratch files, including multi-gigabyte test fixtures.
+scratch/
