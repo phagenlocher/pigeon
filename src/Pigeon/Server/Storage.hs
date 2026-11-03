@@ -141,7 +141,6 @@ data Storage = Storage
 -- | Everything needed to store one upload.
 data StoreRequest = StoreRequest
   { srFilename :: Text,
-    srContentType :: Text,
     srExpiresAt :: UTCTime,
     srPasswordHash :: Maybe Text,
     srContentEncoding :: Maybe ByteString,
@@ -279,7 +278,6 @@ doStore storage db StoreRequest{..} createdAt = do
             StoredFile
               { sfId = fileId,
                 sfFilename = srFilename,
-                sfContentType = srContentType,
                 sfSize = sizeOriginal,
                 sfStoredSize = sizeStored,
                 sfPasswordHash = srPasswordHash,

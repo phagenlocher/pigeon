@@ -50,7 +50,6 @@ import Pigeon.Types (
   StoredFile (..),
   isValidFileId,
   pigeonVersion,
-  sanitizeContentType,
   sanitizeFilename,
  )
 
@@ -63,15 +62,13 @@ uploadHandler ::
   Maybe Text ->
   -- | @expires_in@ query parameter in seconds; defaults to the server lifetime.
   Maybe Int64 ->
-  -- | @content_type@ query parameter; sanitised before storage.
-  Maybe Text ->
   -- | @Content-Encoding@ header; @identity@ or @gzip@.
   Maybe Text ->
   -- | @X-Pigeon-Password@ header; protects the download.
   Maybe Text ->
   UploadBody ->
   App FileInfo
-uploadHandler auth rawFilename rawExpires rawContentType rawEncoding rawPassword body = do
+uploadHandler auth rawFilename rawExpires rawEncoding rawPassword body = do
   requireAuth auth
   cfg <- asks aeConfig
   now <- liftIO getCurrentTime
@@ -88,13 +85,6 @@ uploadHandler auth rawFilename rawExpires rawContentType rawEncoding rawPassword
 
   let filename = maybe "file" sanitizeFilename rawFilename
 
-  storedContentType <- case rawContentType of
-    Nothing -> pure "application/octet-stream"
-    Just value
-      | T.null value -> pure "application/octet-stream"
-      | sanitizeContentType value == value -> pure value
-      | otherwise -> throwError (invalidRequest "content_type contains invalid characters")
-
   passwordHash <- case rawPassword of
     Nothing -> pure Nothing
     Just header -> Just . unStoredPasswordHash <$> decodeAndHashPassword header
@@ -109,7 +99,6 @@ uploadHandler auth rawFilename rawExpires rawContentType rawEncoding rawPassword
       request =
         StoreRequest
           { srFilename = filename,
-            srContentType = storedContentType,
             srExpiresAt = expiresAt,
             srPasswordHash = passwordHash,
             srContentEncoding = fmap encodeUtf8 encoding,
@@ -195,7 +184,6 @@ storedToFileInfo cfg StoredFile{..} =
     { fiId = sfId,
       fiFilename = sfFilename,
       fiSize = sfSize,
-      fiContentType = sfContentType,
       fiCreatedAt = sfCreatedAt,
       fiExpiresAt = sfExpiresAt,
       fiHasPassword = isJust sfPasswordHash,

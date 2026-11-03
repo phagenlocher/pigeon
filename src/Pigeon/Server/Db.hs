@@ -113,7 +113,6 @@ schemaStatements =
   [ "CREATE TABLE IF NOT EXISTS files (\
     \ id TEXT PRIMARY KEY NOT NULL,\
     \ filename TEXT NOT NULL,\
-    \ content_type TEXT NOT NULL,\
     \ size_original INTEGER NOT NULL CHECK (size_original >= 0),\
     \ size_stored INTEGER NOT NULL CHECK (size_stored >= 0),\
     \ password_hash TEXT,\
@@ -133,11 +132,10 @@ insertFile db StoredFile{..} = withConn db $ \connection ->
   execute
     connection
     "INSERT INTO files \
-    \(id, filename, content_type, size_original, size_stored, password_hash, created_at, expires_at) \
-    \VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
+    \(id, filename, size_original, size_stored, password_hash, created_at, expires_at) \
+    \VALUES (?, ?, ?, ?, ?, ?, ?)"
     ( unFileId sfId,
       sfFilename,
-      sfContentType,
       sfSize,
       sfStoredSize,
       sfPasswordHash,
@@ -150,7 +148,7 @@ lookupFile db fileId = withConn db $ \connection -> do
   rows <-
     query
       connection
-      "SELECT id, filename, content_type, size_original, size_stored, password_hash, created_at, expires_at \
+      "SELECT id, filename, size_original, size_stored, password_hash, created_at, expires_at \
       \FROM files WHERE id = ?"
       (Only (unFileId fileId))
   case rows of
@@ -162,7 +160,7 @@ listLiveFiles db now = withConn db $ \connection -> do
   rows <-
     query
       connection
-      "SELECT id, filename, content_type, size_original, size_stored, password_hash, created_at, expires_at \
+      "SELECT id, filename, size_original, size_stored, password_hash, created_at, expires_at \
       \FROM files WHERE expires_at > ? ORDER BY created_at DESC, id ASC"
       (Only (utcToEpoch now))
   mapM rowToStored rows
@@ -172,7 +170,7 @@ allFiles db = withConn db $ \connection -> do
   rows <-
     query_
       connection
-      "SELECT id, filename, content_type, size_original, size_stored, password_hash, created_at, expires_at \
+      "SELECT id, filename, size_original, size_stored, password_hash, created_at, expires_at \
       \FROM files"
   mapM rowToStored rows
 
@@ -228,7 +226,6 @@ deleteRowsMissingBlob db blobExists = do
 type Row =
   ( Text,
     Text,
-    Text,
     Int64,
     Int64,
     Maybe Text,
@@ -237,7 +234,7 @@ type Row =
   )
 
 rowToStored :: Row -> IO StoredFile
-rowToStored (rawId, filename, contentType, sizeOriginal, sizeStored, passwordHash, createdAt, expiresAt) =
+rowToStored (rawId, filename, sizeOriginal, sizeStored, passwordHash, createdAt, expiresAt) =
   case mkFileId rawId of
     Left err -> throwIO (userError ("corrupt file id in database: " <> T.unpack err))
     Right fileId ->
@@ -245,7 +242,6 @@ rowToStored (rawId, filename, contentType, sizeOriginal, sizeStored, passwordHas
         StoredFile
           { sfId = fileId,
             sfFilename = filename,
-            sfContentType = contentType,
             sfSize = sizeOriginal,
             sfStoredSize = sizeStored,
             sfPasswordHash = passwordHash,

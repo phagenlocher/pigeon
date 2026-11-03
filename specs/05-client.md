@@ -32,7 +32,7 @@ main = do
 pigeon-client [GLOBAL OPTIONS] COMMAND [COMMAND OPTIONS]
 
 Commands:
-  upload FILE [--expires-in DURATION] [--name NAME] [--content-type TYPE]
+  upload FILE [--expires-in DURATION] [--name NAME]
               [--password | --password-stdin] [--no-compress]
   list
   delete ID... [--yes]
@@ -106,7 +106,6 @@ Global options:
 pigeon-client [GLOBAL] upload FILE
   [--expires-in DURATION]
   [--name NAME]
-  [--content-type TYPE]
   [--password | --password-stdin]
   [--no-compress]
 ```
@@ -117,7 +116,6 @@ pigeon-client [GLOBAL] upload FILE
 - **CLI-051** `--expires-in` is optional. If omitted, the client omits `expires_in` and the server applies its default expiry.
 - **CLI-052** `--expires-in` accepts the duration grammar in section 9 and must be greater than zero. The server enforces its maximum expiry.
 - **CLI-053** `--name` overrides the display filename. It defaults to `takeFileName FILE`. An empty name is a usage error.
-- **CLI-054** `--content-type` overrides the original content type. It defaults to `application/octet-stream`. CR, LF, and other control characters are rejected locally.
 - **CLI-055** `--password` prompts for a password without echo. It requires an interactive terminal.
 - **CLI-056** `--password-stdin` reads one line from stdin. It is intended for scripts and tests.
 - **CLI-057** `--password` and `--password-stdin` are mutually exclusive.
@@ -139,7 +137,7 @@ pigeon-client [GLOBAL] upload FILE
 - **CLI-071** Count original bytes before compression, so progress and `size` reflect the local file.
 - **CLI-072** If compression is enabled, pipe the stream through `parallelGzipConduit` and set `Content-Encoding: gzip`. It compresses 1 MiB blocks concurrently and emits one standard gzip stream (one header and trailer), never concatenated members. Progress and `size` are counted before compression.
 - **CLI-073** If `--no-compress`, send identity and do not set `Content-Encoding`.
-- **CLI-074** Send `filename`, `expires_in` (only if supplied), and `content_type` as query parameters, properly URL-encoded.
+- **CLI-074** Send `filename` and `expires_in` (only if supplied) as query parameters, properly URL-encoded.
 - **CLI-075** Send the body via the Servant `StreamBody` endpoint. Do not read the whole file first.
 - **CLI-076** Do not set a `Content-Length`; the request is chunked.
 - **CLI-077** The response is decoded as `FileInfo`. On success, print the result.
@@ -157,7 +155,7 @@ pigeon-client [GLOBAL] upload FILE
   Every update begins with `\r` followed by `ESC[2K` (return to column 0 and erase the entire line) and emits no newline, so a shorter update cannot leave characters from a longer one. No final progress line or newline is printed.
 - **CLI-083** Redraw at most every 75 ms (`progressIntervalMs`). When the upload finishes, whether it succeeded or failed, erase the progress line with `\r` followed by `ESC[2K` (erase entire line) before any other output, so the terminal is left with only the command's result or error.
 - **CLI-084** If the file size is zero, the body has no chunks, so no progress line is displayed; the command prints only its result or error.
-- **CLI-085** `--verbose` prints a start line before the body is sent and an end line once the response completes. Both go to stderr, prefixed `verbose:`, and may include the local path, display filename, byte size, server URL, content type, compression mode, file id, and elapsed milliseconds. The end line is printed after the progress line is erased. They never include the token, the password, or file contents.
+- **CLI-085** `--verbose` prints a start line before the body is sent and an end line once the response completes. Both go to stderr, prefixed `verbose:`, and may include the local path, display filename, byte size, server URL, compression mode, file id, and elapsed milliseconds. The end line is printed after the progress line is erased. They never include the token, the password, or file contents.
 - **CLI-086** The progress line includes the estimated remaining time as `, ETA <time>` inside the existing parentheses. The estimate uses the average throughput of original bytes (CLI-071) since the first chunk and is formatted as `45s`, `1m 05s`, or `1h 05m`. Partial seconds are rounded up, so `ETA 0s` appears only once every byte has been counted. The segment is omitted while no bytes have been counted, the total size is unknown, or less than 0.5 s has elapsed. It never adds a line or newline of its own.
 - **CLI-087** The progress line includes the average throughput as `<rate>/s` immediately before the ETA. The rate uses the same original-byte count and elapsed time as CLI-086 and is formatted with binary units and one decimal, for example `4.2 MiB/s`. The segment is omitted while no bytes have been counted or less than 0.5 s has elapsed. It never adds a line or newline of its own.
 - **CLI-088** The progress line is withheld until the ETA is greater than 5 seconds. Once it has been drawn, it stays visible for the rest of the upload, including when the ETA falls to 5 seconds or less. A fast upload that never exceeds the threshold therefore produces no progress output.
@@ -183,7 +181,6 @@ JSON mode:
   "id": "7q3m9x2k4v8p1c6d",
   "filename": "report.pdf",
   "size": 12345678,
-  "contentType": "application/pdf",
   "createdAt": "2026-10-31T10:00:00Z",
   "expiresAt": "2026-11-07T10:00:00Z",
   "hasPassword": true,

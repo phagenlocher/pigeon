@@ -211,7 +211,6 @@ uploadHandler
   :: Maybe Text          -- Authorization
   -> Maybe Text          -- filename
   -> Maybe Int64         -- expires_in
-  -> Maybe Text          -- content_type
   -> Maybe Text          -- Content-Encoding
   -> Maybe Text          -- X-Pigeon-Password
   -> UploadBody
@@ -223,17 +222,16 @@ Algorithm:
 1. **SRV-070** Require a valid bearer token. Return `401` before reading the body.
 2. **SRV-071** Resolve `expires_in`: supplied value, or `default_expiry`. Validate against `max_expiry`.
 3. **SRV-072** Sanitize `filename`. If absent or empty after sanitization, use `file`.
-4. **SRV-073** Validate `content_type`. Absent means `application/octet-stream`. Invalid means `400`.
-5. **SRV-074** Decode `X-Pigeon-Password` if present to bytes, validate base64url and 1–1024 byte length, and decode as UTF-8 without normalization. Invalid UTF-8 is `400 invalid_request`.
-6. **SRV-075** Hash the password with `Pigeon.Password.hashPassword` (PBKDF2-HMAC-SHA512 from the `password` package) using `password_hash_iterations`. This happens before the body is stored so a hashing failure cannot leave a blob.
-7. **SRV-076** Validate `Content-Encoding`: absent/`identity`/`gzip`; otherwise `415`.
-8. **SRV-077** Call `storeUpload` with the stream, metadata, expiry, and encoded password hash.
-9. **SRV-078** Map `StorageError`:
+4. **SRV-074** Decode `X-Pigeon-Password` if present to bytes, validate base64url and 1–1024 byte length, and decode as UTF-8 without normalization. Invalid UTF-8 is `400 invalid_request`.
+5. **SRV-075** Hash the password with `Pigeon.Password.hashPassword` (PBKDF2-HMAC-SHA512 from the `password` package) using `password_hash_iterations`. This happens before the body is stored so a hashing failure cannot leave a blob.
+6. **SRV-076** Validate `Content-Encoding`: absent/`identity`/`gzip`; otherwise `415`.
+7. **SRV-077** Call `storeUpload` with the stream, metadata, expiry, and encoded password hash.
+8. **SRV-078** Map `StorageError`:
    - bad gzip → `400 invalid_request`
    - size limit → `413 payload_too_large`
    - IO/database failure → `500 internal_error`
-10. **SRV-079** Build `FileInfo` with `url = publicUrl <> "/f/" <> id`.
-11. **SRV-080** Return `201` with `Cache-Control: no-store`.
+9. **SRV-079** Build `FileInfo` with `url = publicUrl <> "/f/" <> id`.
+10. **SRV-080** Return `201` with `Cache-Control: no-store`.
 
 Password hashing cost happens only when a password is supplied. An upload without a password does not run PBKDF2.
 

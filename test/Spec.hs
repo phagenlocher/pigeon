@@ -81,7 +81,6 @@ uploadOptions noCompress =
     { uoFile = "test.bin",
       uoExpiresIn = Nothing,
       uoName = Nothing,
-      uoContentType = Nothing,
       uoPassword = NoPassword,
       uoNoCompress = noCompress
     }
@@ -156,7 +155,6 @@ main = hspec $ do
               { fiId = FileId "0000000000000000",
                 fiFilename = "report.pdf",
                 fiSize = 12,
-                fiContentType = "application/pdf",
                 fiCreatedAt = epochToUtc 0,
                 fiExpiresAt = epochToUtc 3600,
                 fiHasPassword = True,
@@ -164,7 +162,7 @@ main = hspec $ do
               }
       formatUploadUrl info `shouldBe` "https://files.example.com/f/0000000000000000\n"
 
-  describe "filename and content-type sanitisation" $ do
+  describe "filename sanitisation" $ do
     it "removes path separators and control characters" $ do
       sanitizeFilename "../../etc/passwd" `shouldBe` ".._.._etc_passwd"
       sanitizeFilename "a\r\nb\0c" `shouldBe` "a__b_c"
@@ -173,9 +171,6 @@ main = hspec $ do
       sanitizeFilename "..." `shouldBe` "file"
       sanitizeFilename "" `shouldBe` "file"
       BS.length (encodeUtf8 (sanitizeFilename (T.replicate 300 "ä"))) `shouldSatisfy` (<= 255)
-    it "sanitises content types" $ do
-      sanitizeContentType "text/plain" `shouldBe` "text/plain"
-      sanitizeContentType "text/plain\r\nX-Evil: yes" `shouldBe` "application/octet-stream"
     it "builds an attachment header with an RFC 5987 filename" $ do
       let header = contentDisposition "sécret<file>.txt"
       header `shouldSatisfy` BS.isInfixOf "attachment"
@@ -340,7 +335,6 @@ main = hspec $ do
               { fiId = FileId "7q3m9x2k4v8p1c6d",
                 fiFilename = "report.pdf",
                 fiSize = 123,
-                fiContentType = "application/pdf",
                 fiCreatedAt = now,
                 fiExpiresAt = addUTCTime 3600 now,
                 fiHasPassword = True,
@@ -373,7 +367,6 @@ main = hspec $ do
           request =
             StoreRequest
               { srFilename = "data.bin",
-                srContentType = "application/octet-stream",
                 srExpiresAt = addUTCTime 3600 now,
                 srPasswordHash = Nothing,
                 srContentEncoding = Nothing,
@@ -455,7 +448,6 @@ main = hspec $ do
           request =
             StoreRequest
               { srFilename = "bad.gz",
-                srContentType = "application/octet-stream",
                 srExpiresAt = addUTCTime 3600 now,
                 srPasswordHash = Nothing,
                 srContentEncoding = Just "gzip",
@@ -477,7 +469,6 @@ main = hspec $ do
           request =
             StoreRequest
               { srFilename = "big",
-                srContentType = "application/octet-stream",
                 srExpiresAt = addUTCTime 3600 now,
                 srPasswordHash = Nothing,
                 srContentEncoding = Nothing,
@@ -500,7 +491,6 @@ main = hspec $ do
           request =
             StoreRequest
               { srFilename = "bomb.gz",
-                srContentType = "application/octet-stream",
                 srExpiresAt = addUTCTime 3600 now,
                 srPasswordHash = Nothing,
                 srContentEncoding = Just "gzip",
@@ -714,6 +704,8 @@ main = hspec $ do
       identityResponse <- download port (fiId info) [("Accept-Encoding", "identity")]
       statusCode (statusOf identityResponse) `shouldBe` 200
       bodyOf identityResponse `shouldBe` "hello pigeon"
+      lookup hContentType (responseHeaders identityResponse)
+        `shouldBe` Just "application/octet-stream"
       lookup "Content-Disposition" (responseHeaders identityResponse)
         `shouldSatisfy` maybe False (BS.isInfixOf "attachment")
       gzipResponse <- download port (fiId info) [("Accept-Encoding", "gzip")]
@@ -891,7 +883,6 @@ storeRequest :: UTCTime -> Maybe BS.ByteString -> BS.ByteString -> StoreRequest
 storeRequest now encoding body =
   StoreRequest
     { srFilename = "data.bin",
-      srContentType = "application/octet-stream",
       srExpiresAt = addUTCTime 3600 now,
       srPasswordHash = Nothing,
       srContentEncoding = encoding,

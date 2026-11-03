@@ -166,7 +166,7 @@ sha512:25000:YWJjZGVmZ2hpamtsbW5vcA==:JRElYYrOMe9OIV4LDxaLTgO9ho8fFBVofXoQcdngi7
   - if the result is empty, use `file`.
 - **SEC-086** `Content-Disposition` is built from the sanitized filename and always uses `attachment`.
 - **SEC-087** The ASCII fallback replaces non-ASCII, quotes, backslashes, CR, and LF with `_`; the RFC 5987 `filename*` value percent-encodes the UTF-8 name.
-- **SEC-088** Content types are sanitized: printable ASCII only, maximum 255 characters, no CR/LF. Invalid values become `application/octet-stream`.
+- **SEC-088** File responses always use `Content-Type: application/octet-stream`; the service does not store or accept a user-supplied content type.
 - **SEC-089** HTML is generated with `blaze-html` or an equivalent escaping builder. Never concatenate filenames or error text into raw HTML.
 
 ## 7. HTTP security headers
@@ -174,6 +174,7 @@ sha512:25000:YWJjZGVmZ2hpamtsbW5vcA==:JRElYYrOMe9OIV4LDxaLTgO9ho8fFBVofXoQcdngi7
 File responses:
 
 ```
+Content-Type: application/octet-stream
 Content-Disposition: attachment; ...
 X-Content-Type-Options: nosniff
 Cache-Control: no-store
@@ -205,7 +206,7 @@ X-Robots-Tag: noindex, nofollow
 ## 8. Logging and error hygiene
 
 - **SEC-100** Never log the bearer token, password, password hash, salt, `Authorization` header, or `X-Pigeon-Password`.
-- **SEC-101** Never log query strings. Upload query parameters include the filename and content type.
+- **SEC-101** Never log query strings. Upload query parameters include the filename.
 - **SEC-102** Request logs include method, path without query, status, duration, and response bytes when known.
 - **SEC-103** Application logs may include file IDs, sizes, expiry, and password presence. They do not include filenames.
 - **SEC-104** Error responses do not include SQL, filesystem paths, stack traces, or exception messages.

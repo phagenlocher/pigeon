@@ -60,7 +60,6 @@ data FileInfo = FileInfo
   { fiId          :: FileId
   , fiFilename    :: Text
   , fiSize        :: Int64
-  , fiContentType :: Text
   , fiCreatedAt   :: UTCTime
   , fiExpiresAt   :: UTCTime
   , fiHasPassword :: Bool
@@ -82,7 +81,6 @@ newtype ApiErrorEnvelope = ApiErrorEnvelope { unApiErrorEnvelope :: ApiError }
 data StoredFile = StoredFile
   { sfId           :: FileId
   , sfFilename     :: Text
-  , sfContentType  :: Text
   , sfSize         :: Int64
   , sfStoredSize   :: Int64
   , sfPasswordHash :: Maybe Text   -- encoded PBKDF2 hash text, or Nothing
@@ -163,7 +161,7 @@ HTTP request body (chunked)
   ▼
 server handler
   │  auth check before consuming body
-  │  validate filename, expiry, content type, password
+  │  validate filename, expiry, and password
   ▼
   ├─ Content-Encoding: gzip ──▶ sinkFile temp (bytes as received)
   │                              │

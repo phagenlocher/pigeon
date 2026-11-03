@@ -20,7 +20,7 @@ import Data.Conduit.Combinators (sourceHandle)
 import Data.Conduit.Combinators qualified as CC
 import Data.Maybe (fromMaybe, isJust, isNothing)
 import Data.Text (Text)
-import Data.Text.Encoding (decodeUtf8', encodeUtf8)
+import Data.Text.Encoding (decodeUtf8')
 import Data.Time (getCurrentTime)
 import Network.HTTP.Types (
   ResponseHeaders,
@@ -71,7 +71,6 @@ import Pigeon.Types (
   StoredFile (..),
   contentDisposition,
   isValidFileId,
-  sanitizeContentType,
   sanitizeFilename,
  )
 
@@ -179,7 +178,7 @@ chosenEncoding request =
 
 fileHeaders :: StoredFile -> AcceptEncoding -> ResponseHeaders
 fileHeaders stored encoding =
-  [ (hContentType, encodeUtf8 (sanitizeContentType (sfContentType stored))),
+  [ (hContentType, "application/octet-stream"),
     ("Content-Disposition", contentDisposition (sfFilename stored)),
     ("X-Content-Type-Options", "nosniff"),
     (hCacheControl, "no-store"),

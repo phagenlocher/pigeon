@@ -140,14 +140,13 @@ runUpload cfg clientApi options = do
         Left failure -> reportFailure cfg failure
         Right passwordHeader -> do
           let filename = fromMaybe (T.pack (takeFileName (uoFile options))) (uoName options)
-              contentType = fromMaybe "application/octet-stream" (uoContentType options)
               compression = if uoNoCompress options then Nothing else Just "gzip"
               authorization = Just ("Bearer " <> secretText (ccToken cfg))
           uploaded <-
             try
               ( withInputFile
                   (uoFile options)
-                  (performUpload cfg clientApi options filename contentType compression passwordHeader authorization)
+                  (performUpload cfg clientApi options filename compression passwordHeader authorization)
               )
           case uploaded :: Either IOException (Either ClientError FileInfo) of
             Left _ -> reportFailure cfg (Failure 7 "file_error" ("cannot read file: " <> T.pack (uoFile options)))
@@ -169,13 +168,12 @@ performUpload ::
   ClientApi ->
   UploadOptions ->
   Text ->
-  Text ->
   Maybe Text ->
   Maybe Text ->
   Maybe Text ->
   Handle ->
   IO (Either ClientError FileInfo)
-performUpload cfg clientApi options filename contentType compression passwordHeader authorization handle = do
+performUpload cfg clientApi options filename compression passwordHeader authorization handle = do
   totalSize <- fromIntegral <$> getFileSize (uoFile options)
   counter <- newIORef 0
   showProgress <- shouldShowProgress cfg
@@ -188,8 +186,6 @@ performUpload cfg clientApi options filename contentType compression passwordHea
       <> T.pack (show totalSize)
       <> " server="
       <> ccServerText cfg
-      <> " content_type="
-      <> contentType
       <> " compression="
       <> maybe "identity" (const "gzip") compression
   started <- getCurrentTime
@@ -207,7 +203,6 @@ performUpload cfg clientApi options filename contentType compression passwordHea
           authorization
           (Just filename)
           (uoExpiresIn options)
-          (Just contentType)
           compression
           passwordHeader
           body

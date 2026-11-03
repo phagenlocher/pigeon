@@ -42,7 +42,6 @@ data ApiClient = ApiClient
       Maybe Int64 ->
       Maybe Text ->
       Maybe Text ->
-      Maybe Text ->
       UploadBody ->
       ClientM FileInfo,
     acList :: Maybe Text -> ClientM [FileInfo],

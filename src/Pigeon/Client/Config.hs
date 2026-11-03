@@ -42,7 +42,6 @@ data UploadOptions = UploadOptions
   { uoFile :: FilePath,
     uoExpiresIn :: Maybe Int64,
     uoName :: Maybe Text,
-    uoContentType :: Maybe Text,
     uoPassword :: PasswordSource,
     uoNoCompress :: Bool
   }
@@ -140,8 +139,6 @@ uploadParser =
                   (long "expires-in" <> metavar "DURATION" <> help "Lifetime; server default when omitted")
               )
             <*> optional (strOption (long "name" <> metavar "NAME" <> help "Display filename"))
-            <*> optional
-              (strOption (long "content-type" <> metavar "TYPE" <> help "Original content type"))
             <*> passwordParser
             <*> switch (long "no-compress" <> help "Send the body without gzip compression")
         )
@@ -252,12 +249,7 @@ validateCommand = \case
       Just n
         | T.null n -> usage "error: --name must not be empty"
         | otherwise -> pure (Just n)
-    contentType <- case uoContentType options of
-      Nothing -> pure Nothing
-      Just rawContentType
-        | validContentType rawContentType -> pure (Just rawContentType)
-        | otherwise -> usage "error: --content-type contains invalid characters"
-    pure (Upload options{uoExpiresIn = expires, uoName = name, uoContentType = contentType})
+    pure (Upload options{uoExpiresIn = expires, uoName = name})
   List -> pure List
   Delete options
     | null (doIds options) -> usage "error: delete requires at least one id"
@@ -265,9 +257,3 @@ validateCommand = \case
  where
   usage :: Text -> IO a
   usage = exitWithText 2
-
-validContentType :: Text -> Bool
-validContentType rawType =
-  not (T.null rawType)
-    && T.length rawType <= 255
-    && T.all (\c -> c >= ' ' && c <= '~') rawType
