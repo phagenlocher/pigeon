@@ -64,9 +64,15 @@ import Pigeon.Client.Output (
   progressLineVisible,
   transferRate,
  )
+import Pigeon.Config (normalizeBaseUrl)
 import Pigeon.Duration
 import Pigeon.Password
-import Pigeon.Server.Config (ServerConfig (..))
+import Pigeon.Server.Config (
+  ServerConfig (..),
+  TlsMode (..),
+  derivePublicUrl,
+  isWildcardHost,
+ )
 import Pigeon.Server.Db
 import Pigeon.Server.Storage
 import Pigeon.Server.Sweeper (SweepCounts (..), sweepShouldLog)
@@ -103,6 +109,31 @@ main = hspec $ do
       property $ \(Positive n :: Positive Int) ->
         let seconds = fromIntegral (n `mod` 1000000 + 1) :: Int64
          in parseDuration (formatDuration seconds) == Right seconds
+
+  describe "server public URL" $ do
+    it "uses the bind host and keeps a non-default port" $ do
+      derivePublicUrl (TlsEnabled "cert.pem" "key.pem") "example.com" 9999
+        `shouldBe` "https://example.com:9999"
+      derivePublicUrl TlsDisabled "example.com" 9999
+        `shouldBe` "http://example.com:9999"
+    it "omits only the port the browser can infer from the scheme" $ do
+      derivePublicUrl TlsDisabled "example.com" 80 `shouldBe` "http://example.com"
+      derivePublicUrl (TlsEnabled "cert.pem" "key.pem") "example.com" 443 `shouldBe` "https://example.com"
+      derivePublicUrl TlsDisabled "example.com" 443 `shouldBe` "http://example.com:443"
+      derivePublicUrl (TlsEnabled "cert.pem" "key.pem") "example.com" 80
+        `shouldBe` "https://example.com:80"
+    it "brackets IPv6 hosts" $
+      derivePublicUrl (TlsEnabled "cert.pem" "key.pem") "::1" 9999
+        `shouldBe` "https://[::1]:9999"
+    it "falls back to loopback for wildcard bind addresses" $ do
+      isWildcardHost "0.0.0.0" `shouldBe` True
+      isWildcardHost "::" `shouldBe` True
+      isWildcardHost "example.com" `shouldBe` False
+      derivePublicUrl (TlsEnabled "cert.pem" "key.pem") "0.0.0.0" 9999
+        `shouldBe` "https://127.0.0.1:9999"
+    it "preserves an explicit non-default port during normalization" $ do
+      normalizeBaseUrl "https://example.com:9999" `shouldBe` Right "https://example.com:9999"
+      normalizeBaseUrl "https://example.com:443" `shouldBe` Right "https://example.com"
 
   describe "upload ETA" $ do
     it "is unavailable until a stable estimate is possible" $ do
@@ -710,6 +741,7 @@ main = hspec $ do
         `shouldSatisfy` maybe False (BS.isInfixOf "attachment")
       gzipResponse <- download port (fiId info) [("Accept-Encoding", "gzip")]
       lookup "Content-Encoding" (responseHeaders gzipResponse) `shouldBe` Just "gzip"
+      lookup "Content-Length" (responseHeaders gzipResponse) `shouldBe` Nothing
       deleteFile client (fiId info)
       gone <- download port (fiId info) []
       statusCode (statusOf gone) `shouldBe` 404
@@ -745,8 +777,7 @@ main = hspec $ do
       bodyOf identity `shouldBe` LBS.fromStrict payload
       passthrough <- download port (fiId info) [("Accept-Encoding", "gzip")]
       bodyOf passthrough `shouldBe` LBS.fromStrict compressed
-      lookup "Content-Length" (responseHeaders passthrough)
-        `shouldBe` Just (B8.pack (show (BS.length compressed)))
+      lookup "Content-Length" (responseHeaders passthrough) `shouldBe` Nothing
     it "rejects a corrupted block-parallel gzip stream over HTTP" $ withTestServer $ \_ port -> do
       client <- testClientEnv port
       let payload = BS.concat (replicate 2 (BS.replicate gzipBlockSize 0x5a))

@@ -29,7 +29,6 @@ import Network.HTTP.Types (
   hAllow,
   hCacheControl,
   hContentEncoding,
-  hContentLength,
   hContentType,
   mkStatus,
   status200,
@@ -176,6 +175,12 @@ chosenEncoding request =
     parseAcceptEncoding
     (lookup hAcceptEncoding (requestHeaders request))
 
+{- | Headers for a file response.
+
+The gzip response deliberately omits @Content-Length@ because its length is the
+compressed size. Browsers save the decompressed file, so advertising the
+compressed length makes download progress and ETAs wrong.
+-}
 fileHeaders :: StoredFile -> AcceptEncoding -> ResponseHeaders
 fileHeaders stored encoding =
   [ (hContentType, "application/octet-stream"),
@@ -188,10 +193,7 @@ fileHeaders stored encoding =
     ("Vary", "Accept-Encoding")
   ]
     ++ case encoding of
-      AcceptGzip ->
-        [ (hContentEncoding, "gzip"),
-          (hContentLength, B8.pack (show (sfStoredSize stored)))
-        ]
+      AcceptGzip -> [(hContentEncoding, "gzip")]
       _ -> []
 
 -- * Responses

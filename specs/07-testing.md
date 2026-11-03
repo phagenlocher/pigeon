@@ -125,6 +125,14 @@ Tests must assert behavior, not implementation details. Do not weaken a test to 
 - **TEST-102** `ApiErrorEnvelope` serializes to `{"error":{"code":"...","message":"..."}}`.
 - **TEST-103** No API response contains `password_hash`, salt, digest, or `size_stored`.
 
+### 3.9 Public URL derivation
+
+- **TEST-104** The default public URL uses `--host` and includes a non-default port: `https`, host `example.com`, port `9999` → `https://example.com:9999`.
+- **TEST-105** The default public URL omits only the scheme-default port: `http` port `80` and `https` port `443`.
+- **TEST-106** IPv6 bind hosts are bracketed: `::1` → `https://[::1]:9999`.
+- **TEST-107** Wildcard bind hosts fall back to `127.0.0.1` and take the warning path.
+- **TEST-108** An explicit `--public-url` preserves a non-default port and removes a scheme-default port during normalization.
+
 ## 4. Storage tests
 
 ### 4.1 SQLite configuration and durability
@@ -210,7 +218,7 @@ Failures are injected through `StorageHooks` so the tests do not depend on a par
 
 ### 5.3 Download
 
-- **TEST-180** `GET /f/:id` with `Accept-Encoding: gzip` returns `Content-Encoding: gzip`, `Content-Length = size_stored`, and decompresses to the original.
+- **TEST-180** `GET /f/:id` with `Accept-Encoding: gzip` returns `Content-Encoding: gzip`, no `Content-Length`, and decompresses to the original.
 - **TEST-181** `GET /f/:id` with `Accept-Encoding: identity` returns the original bytes, no `Content-Encoding`, and no `Content-Length`.
 - **TEST-182** `HEAD /f/:id` returns the same headers as `GET` and an empty body.
 - **TEST-183** Unknown/deleted/expired ID → `404` HTML with no ID echo.
@@ -289,7 +297,7 @@ Run the built `pigeon-client` against a test server. Use `readProcessWithExitCod
 - **TEST-288** A payload spanning several 1 MiB blocks round-trips through `parallelGzipConduit` and decodes with plain `ungzip`: the output starts with the gzip magic and is one member, not concatenated members.
 - **TEST-289** A block-parallel gzip stream passes `gzip -t` and is fully decoded by a zlib-based client (`curl --compressed`); record the command in the manual benchmark.
 - **TEST-290** A corrupted block-parallel gzip stream returns `400 invalid_request` and leaves no metadata row, blob, or temp file.
-- **TEST-291** An identity upload larger than one block is stored as one gzip member; identity download is byte-equal and gzip passthrough returns the stored bytes with a matching `Content-Length`.
+- **TEST-291** An identity upload larger than one block is stored as one gzip member; identity download is byte-equal and gzip passthrough returns the stored bytes without a `Content-Length`.
 - **TEST-292** A zero-byte upload produces a valid gzip stream and `size = 0`; block-parallel compression of an empty stream does not produce an empty body.
 - **TEST-293** A 32 MiB round-trip succeeds under a bounded heap (`+RTS -M192m`, or record why a tighter cap is flaky per `TEST-251`).
 
