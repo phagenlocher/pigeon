@@ -237,7 +237,7 @@ Vary: Accept-Encoding
 - **NET-071** The ASCII fallback replaces non-ASCII, quote, backslash, CR, and LF characters with `_`.
 - **NET-072** The `filename*` value is RFC 5987 percent-encoded UTF-8.
 - **NET-073** Every file response uses `Content-Type: application/octet-stream`; the service does not store or accept a user-supplied content type.
-- **NET-074** A `Content-Encoding: gzip` response includes `Content-Length: <size_stored>`.
+- **NET-074** A `Content-Encoding: gzip` response has no `Content-Length` and is sent with chunked transfer encoding. The stored gzip length is not advertised because it is not the downloaded file size.
 - **NET-075** An identity response has no `Content-Length` and is sent with chunked transfer encoding.
 
 ## 6. Compression negotiation

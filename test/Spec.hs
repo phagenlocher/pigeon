@@ -741,6 +741,7 @@ main = hspec $ do
         `shouldSatisfy` maybe False (BS.isInfixOf "attachment")
       gzipResponse <- download port (fiId info) [("Accept-Encoding", "gzip")]
       lookup "Content-Encoding" (responseHeaders gzipResponse) `shouldBe` Just "gzip"
+      lookup "Content-Length" (responseHeaders gzipResponse) `shouldBe` Nothing
       deleteFile client (fiId info)
       gone <- download port (fiId info) []
       statusCode (statusOf gone) `shouldBe` 404
@@ -776,8 +777,7 @@ main = hspec $ do
       bodyOf identity `shouldBe` LBS.fromStrict payload
       passthrough <- download port (fiId info) [("Accept-Encoding", "gzip")]
       bodyOf passthrough `shouldBe` LBS.fromStrict compressed
-      lookup "Content-Length" (responseHeaders passthrough)
-        `shouldBe` Just (B8.pack (show (BS.length compressed)))
+      lookup "Content-Length" (responseHeaders passthrough) `shouldBe` Nothing
     it "rejects a corrupted block-parallel gzip stream over HTTP" $ withTestServer $ \_ port -> do
       client <- testClientEnv port
       let payload = BS.concat (replicate 2 (BS.replicate gzipBlockSize 0x5a))

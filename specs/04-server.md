@@ -295,7 +295,7 @@ responseStream status200 headers $ \send flush ->
 
 - **SRV-120** Use `responseStream`, not `responseLBS`.
 - **SRV-121** Open the blob with `O_NOFOLLOW` after the DB lookup and after releasing the DB lock.
-- **SRV-122** Gzip passthrough sends `Content-Encoding: gzip` and `Content-Length: size_stored`.
+- **SRV-122** Gzip passthrough sends `Content-Encoding: gzip` and no `Content-Length`; the response uses chunked transfer encoding. The compressed length is not advertised because browsers save the decompressed file and would report a wrong size and ETA.
 - **SRV-123** Identity sends no `Content-Length` and uses chunked transfer.
 - **SRV-124** Always set `Vary: Accept-Encoding`.
 - **SRV-125** Always set `Content-Disposition: attachment` with ASCII fallback and RFC 5987 `filename*`.
