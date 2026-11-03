@@ -304,58 +304,33 @@ runList cfg clientApi = do
 
 runDelete :: ClientConfig -> ClientApi -> DeleteOptions -> IO Int
 runDelete cfg clientApi options = do
-  confirmed <- confirmDelete cfg (doYes options) (length (doIds options))
-  case confirmed of
-    Left code -> pure code
-    Right () -> do
-      let ids = map FileId (doIds options)
-      outcomes <-
-        forM ids $ \fileId -> do
-          result <-
-            runApi clientApi $
-              acDelete (caApi clientApi) fileId (Just ("Bearer " <> secretText (ccToken cfg)))
-          pure (fileId, result)
-      let deleted = [unFileId fileId | (fileId, Right _) <- outcomes]
-          failed =
-            [ (unFileId fileId, mapClientError err)
-            | (fileId, Left err) <- outcomes
-            ]
-      if ccJson cfg
-        then do
-          LBS.putStr
-            ( encode
-                ( deleteResultJson
-                    deleted
-                    [(fileId, failureCode failure, failureMessage failure) | (fileId, failure) <- failed]
-                )
+  let ids = map FileId (doIds options)
+  outcomes <-
+    forM ids $ \fileId -> do
+      result <-
+        runApi clientApi $
+          acDelete (caApi clientApi) fileId (Just ("Bearer " <> secretText (ccToken cfg)))
+      pure (fileId, result)
+  let deleted = [unFileId fileId | (fileId, Right _) <- outcomes]
+      failed =
+        [ (unFileId fileId, mapClientError err)
+        | (fileId, Left err) <- outcomes
+        ]
+  if ccJson cfg
+    then do
+      LBS.putStr
+        ( encode
+            ( deleteResultJson
+                deleted
+                [(fileId, failureCode failure, failureMessage failure) | (fileId, failure) <- failed]
             )
-          putStrLn ""
-        else do
-          forM_ deleted $ \fileId -> TIO.putStrLn ("Deleted " <> fileId)
-          forM_ failed $ \(fileId, failure) ->
-            TIO.hPutStrLn stderr ("error: " <> fileId <> ": " <> failureMessage failure)
-      pure (deleteExitCode failed)
-
-confirmDelete :: ClientConfig -> Bool -> Int -> IO (Either Int ())
-confirmDelete cfg assumeYes count
-  | assumeYes = pure (Right ())
-  | otherwise = do
-      terminal <- hIsTerminalDevice stdin
-      if not terminal
-        then do
-          code <-
-            reportFailure
-              cfg
-              (Failure 2 "usage_error" "confirmation requires --yes when stdin is not a terminal")
-          pure (Left code)
-        else do
-          TIO.hPutStr stderr ("Delete " <> T.pack (show count) <> " files? [y/N] ")
-          hFlush stderr
-          answer <- TIO.getLine
-          pure $
-            if T.toLower (T.strip answer) `elem` ["y", "yes"]
-              then Right ()
-              else Left 8
+        )
+      putStrLn ""
+    else do
+      forM_ deleted $ \fileId -> TIO.putStrLn ("Deleted " <> fileId)
+      forM_ failed $ \(fileId, failure) ->
+        TIO.hPutStrLn stderr ("error: " <> fileId <> ": " <> failureMessage failure)
+  pure (deleteExitCode failed)
 
 deleteExitCode :: [(Text, Failure)] -> Int
 deleteExitCode [] = 0

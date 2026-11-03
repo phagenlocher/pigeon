@@ -47,9 +47,8 @@ data UploadOptions = UploadOptions
   }
   deriving (Eq, Show)
 
-data DeleteOptions = DeleteOptions
-  { doIds :: [Text],
-    doYes :: Bool
+newtype DeleteOptions = DeleteOptions
+  { doIds :: [Text]
   }
   deriving (Eq, Show)
 
@@ -155,11 +154,8 @@ uploadParser =
 
 deleteParser :: Parser ClientCommand
 deleteParser =
-  Delete
-    <$> ( DeleteOptions
-            <$> some (argument str (metavar "ID"))
-            <*> switch (long "yes" <> help "Do not ask for confirmation")
-        )
+  Delete . DeleteOptions
+    <$> some (argument str (metavar "ID..." <> help "One or more file ids"))
 
 commandParser :: Parser ClientCommand
 commandParser =

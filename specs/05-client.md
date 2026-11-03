@@ -35,7 +35,7 @@ Commands:
   upload FILE [--expires-in DURATION] [--name NAME]
               [--password | --password-stdin] [--no-compress]
   list
-  delete ID... [--yes]
+  delete ID...
 
 Global options:
   --server URL             Server base URL (env: PIGEON_SERVER)
@@ -215,18 +215,11 @@ pigeon-client [GLOBAL] list
 ## 6. `delete`
 
 ```text
-pigeon-client [GLOBAL] delete ID... [--yes]
+pigeon-client [GLOBAL] delete ID...
 ```
 
 - **CLI-110** At least one ID is required.
 - **CLI-111** IDs are passed to the server unchanged; the server validates them.
-- **CLI-112** Without `--yes`, prompt on stderr:
-  ```
-  Delete 2 files? [y/N]
-  ```
-- **CLI-113** When stdin is a TTY, accept `y` or `yes` case-insensitively. Anything else, empty input, or EOF means cancel.
-- **CLI-114** If stdin is not a TTY and `--yes` is not supplied, exit `2` with a usage error instead of blocking.
-- **CLI-115** Canceled deletion exits `8` and deletes nothing.
 - **CLI-116** Deletes are attempted sequentially. A failure does not stop later IDs.
 - **CLI-117** Exit `0` only if every delete succeeds; otherwise exit `1`, or the mapped error code if exactly one distinct failure class occurred.
 - **CLI-118** Human success output:
@@ -254,13 +247,12 @@ pigeon-client [GLOBAL] delete ID... [--yes]
 | --- | --- |
 | `0` | Success |
 | `1` | Generic failure (bad request, partial delete failure, unexpected response) |
-| `2` | Usage error: bad flags, missing token, missing file argument, non-TTY confirmation without `--yes` |
+| `2` | Usage error: bad flags, missing token, missing file argument |
 | `3` | Authentication failure (`401`/`403`) |
 | `4` | Not found (`404`) |
 | `5` | Network, DNS, timeout, or TLS failure |
 | `6` | Server error (`5xx`) |
 | `7` | Local file error: missing, unreadable, not a regular file, permission denied |
-| `8` | User canceled a confirmation |
 
 - **CLI-130** HTTP `401`/`403` maps to `3` and prints the server message if available.
 - **CLI-131** HTTP `404` maps to `4`.
@@ -340,10 +332,6 @@ pigeon-client --json --server https://files.example.com --token-file ~/.pigeon-t
 # Delete one file
 pigeon-client --server https://files.example.com --token-file ~/.pigeon-token \
   delete 7q3m9x2k4v8p1c6d
-
-# Delete without confirmation in a script
-pigeon-client --server https://files.example.com --token "$PIGEON_TOKEN" \
-  delete 7q3m9x2k4v8p1c6d 8r4n0y3l5w9q2d7e --yes
 ```
 
 ## 11. Client acceptance criteria
@@ -356,8 +344,6 @@ pigeon-client --server https://files.example.com --token "$PIGEON_TOKEN" \
 - **CLI-A06** A wrong password for download is not a client concern in v1; the browser form handles it.
 - **CLI-A07** `--json` upload output is a valid `FileInfo` object.
 - **CLI-A08** `list` with `--json` outputs a valid array and preserves server order.
-- **CLI-A09** `delete` without `--yes` prompts on a TTY; answering `n` exits `8` and deletes nothing.
-- **CLI-A10** `delete` with a non-TTY stdin and no `--yes` exits `2`.
 - **CLI-A11** Missing token exits `2` before any network request.
 - **CLI-A12** Wrong token exits `3`.
 - **CLI-A13** Unknown delete ID exits `4`.

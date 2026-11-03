@@ -282,7 +282,7 @@ main = hspec $ do
       desiredCapabilities (Upload (uploadOptions True)) `shouldBe` 2
     it "uses two capabilities for list and delete" $ do
       desiredCapabilities List `shouldBe` 2
-      desiredCapabilities (Delete (DeleteOptions [] True)) `shouldBe` 2
+      desiredCapabilities (Delete (DeleteOptions [])) `shouldBe` 2
 
   describe "chunked file source" $ do
     it "reads a handle in the requested chunk size and preserves bytes" $ withTempDataDir $ \dir -> do

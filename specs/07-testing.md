@@ -269,9 +269,7 @@ Run the built `pigeon-client` against a test server. Use `readProcessWithExitCod
 - **TEST-239** `list` prints a table with ID, name, size, expiry, remaining, and password.
 - **TEST-240** `--json list` prints a valid array and preserves order.
 - **TEST-241** `--json upload` prints a valid `FileInfo` object.
-- **TEST-242** `delete --yes` removes the file and exits `0`.
-- **TEST-243** `delete` with a PTY answering `n` exits `8` and deletes nothing. Use a PTY helper; this may be marked manual if the test environment cannot allocate one.
-- **TEST-244** `delete` with a non-TTY stdin and no `--yes` exits `2`.
+- **TEST-242** `delete` removes the file and exits `0`.
 - **TEST-245** `delete` continues after one failure and reports all results.
 - **TEST-246** A plain HTTP server URL with a token prints the warning.
 - **TEST-247** `--quiet` suppresses progress but not errors or the plaintext warning.
@@ -368,5 +366,4 @@ Run before a release:
 14. Verify `robots.txt` and `X-Robots-Tag`.
 15. Run the CLI against a plain HTTP dev server; verify the warning.
 16. Verify `--insecure` against a self-signed certificate and that the default fails.
-17. Verify `delete` confirmation, `--yes`, and non-TTY behavior.
-18. Verify `--json` output with `jq`.
+17. Verify `--json` output with `jq`.
