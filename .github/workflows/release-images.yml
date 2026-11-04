@@ -187,6 +187,8 @@ jobs:
           target: server
           platforms: ${{ matrix.platform }}
           outputs: type=image,name=${{ needs.prepare.outputs.server-image }},push-by-digest=true,name-canonical=true,push=true
+          # Everything, dependencies included, at -O2 (see cabal.project.release).
+          build-args: CABAL_PROJECT_FILE=cabal.project.release
           provenance: false
           cache-from: type=gha,scope=release-${{ matrix.arch }}
           cache-to: type=gha,mode=max,scope=release-${{ matrix.arch }}
@@ -236,6 +238,8 @@ jobs:
           target: client
           platforms: ${{ matrix.platform }}
           outputs: type=image,name=${{ needs.prepare.outputs.client-image }},push-by-digest=true,name-canonical=true,push=true
+          # Everything, dependencies included, at -O2 (see cabal.project.release).
+          build-args: CABAL_PROJECT_FILE=cabal.project.release
           provenance: false
           cache-from: type=gha,scope=release-${{ matrix.arch }}
           cache-to: type=gha,mode=max,scope=release-${{ matrix.arch }}

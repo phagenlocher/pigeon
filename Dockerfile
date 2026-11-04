@@ -4,17 +4,7 @@
 #
 #   docker build  --target server -t pigeon-server .
 #   docker build  --target client -t pigeon-client .
-#   docker buildx build --platform linux/amd64,linux/arm64 \
-#       --target server -t ghcr.io/you/pigeon-server:0.1.0 --push .
 #
-# Publishing a GitHub release produces multi-arch manifest lists at
-# ghcr.io/<owner>/pigeon-server and ghcr.io/<owner>/pigeon-client.
-#
-# The build stage runs on the *target* platform, so no Haskell
-# cross-compilation and no QEMU is involved: releases build amd64 on
-# ubuntu-24.04 and arm64 on the native ubuntu-24.04-arm runner (see
-# .github/workflows/release-images.yml).
-
 # Keep in step with .github/workflows/ci.yml. The slim image is Debian
 # bookworm, which the runtime stage below must stay on for glibc/libgmp ABI
 # compatibility. It already ships gcc, libc6-dev, zlib1g-dev, and libgmp-dev.
@@ -36,20 +26,28 @@ RUN --mount=type=cache,id=cabal-packages,sharing=locked,target=/root/.cabal/pack
 # the local library, so `--dependencies-only` would still configure and compile
 # it. Dependency reuse comes from the store cache mount below, not from a
 # separate layer. test/fixtures is referenced by extra-source-files.
-COPY cabal.project pigeon.cabal LICENSE CHANGELOG.md /src/
+COPY cabal.project cabal.project.release pigeon.cabal LICENSE CHANGELOG.md /src/
 COPY test/fixtures /src/test/fixtures
 COPY app /src/app
 COPY src /src/src
 
 # Install both binaries into a plain layer; the stages below choose one.
-# cabal.project compiles dependencies at -O2, which is what production wants.
+#
+# CABAL_PROJECT_FILE selects the build profile. The default, cabal.project,
+# builds at cabal's -O1 default; release builds pass cabal.project.release for
+# -O2 everywhere. Both files are copied above, and `cabal list-bin` must take
+# the same flag or it will look in a different build directory than the one
+# `cabal build` wrote to.
+ARG CABAL_PROJECT_FILE=cabal.project
+
 RUN --mount=type=cache,id=cabal-packages,sharing=locked,target=/root/.cabal/packages \
     --mount=type=cache,id=cabal-store-${TARGETARCH},target=/root/.cabal/store \
     --mount=type=cache,id=pigeon-dist-${TARGETARCH},target=/src/dist-newstyle \
-    cabal build --disable-tests -j exe:pigeon-server exe:pigeon-client \
+    cabal build --project-file=${CABAL_PROJECT_FILE} --disable-tests -j \
+      exe:pigeon-server exe:pigeon-client \
  && mkdir -p /out \
- && install -m 0755 "$(cabal list-bin exe:pigeon-server)" /out/pigeon-server \
- && install -m 0755 "$(cabal list-bin exe:pigeon-client)" /out/pigeon-client \
+ && install -m 0755 "$(cabal list-bin --project-file=${CABAL_PROJECT_FILE} exe:pigeon-server)" /out/pigeon-server \
+ && install -m 0755 "$(cabal list-bin --project-file=${CABAL_PROJECT_FILE} exe:pigeon-client)" /out/pigeon-client \
  && strip --strip-unneeded /out/pigeon-server /out/pigeon-client
 
 # Runtime base, on the same Debian release as the builder. The server needs

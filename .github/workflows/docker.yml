@@ -27,7 +27,6 @@ on:
       - cabal.project
       - pigeon.cabal
       - .github/workflows/docker.yml
-  workflow_dispatch:
 
 concurrency:
   group: docker-${{ github.workflow }}-${{ github.ref }}
