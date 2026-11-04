@@ -64,7 +64,7 @@ import Pigeon.Client.Output (
   progressLineVisible,
   transferRate,
  )
-import Pigeon.Config (normalizeBaseUrl)
+import Pigeon.Config (normalizeBaseUrl, parseEnvBool)
 import Pigeon.Duration
 import Pigeon.Password
 import Pigeon.Server.Config (
@@ -109,6 +109,20 @@ main = hspec $ do
       property $ \(Positive n :: Positive Int) ->
         let seconds = fromIntegral (n `mod` 1000000 + 1) :: Int64
          in parseDuration (formatDuration seconds) == Right seconds
+
+  describe "environment flags" $ do
+    it "accepts the documented true spellings for PIGEON_NO_TLS" $
+      mapM_
+        (\value -> parseEnvBool value `shouldBe` Right True)
+        ["1", "true", "TRUE", "yes", "on", " On "]
+    it "accepts the documented false spellings for PIGEON_NO_TLS" $
+      mapM_
+        (\value -> parseEnvBool value `shouldBe` Right False)
+        ["0", "false", "FALSE", "no", "off", " Off "]
+    it "rejects anything else so a typo cannot change TLS behaviour" $
+      mapM_
+        (\value -> parseEnvBool value `shouldSatisfy` isLeft)
+        ["2", "maybe", "y", "n", "tls"]
 
   describe "server public URL" $ do
     it "uses the bind host and keeps a non-default port" $ do

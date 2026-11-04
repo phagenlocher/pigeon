@@ -1,0 +1,13 @@
+# Keep the build context small. scratch/ in particular holds multi-gigabyte
+# test fixtures that must never be sent to the daemon.
+scratch/
+
+.git/
+.github/
+dist-newstyle/
+dist/
+data/
+*.o
+*.hi
+*.hie
+cabal.project.local*

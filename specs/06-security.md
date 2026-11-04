@@ -141,7 +141,7 @@ sha512:25000:YWJjZGVmZ2hpamtsbW5vcA==:JRElYYrOMe9OIV4LDxaLTgO9ho8fFBVofXoQcdngi7
 ## 5. TLS
 
 - **SEC-070** TLS is enabled by default.
-- **SEC-071** `--no-tls` is an explicit development-only option and logs a prominent warning.
+- **SEC-071** `--no-tls`, or its `PIGEON_NO_TLS` environment fallback, is an explicit development-only option and logs a prominent warning.
 - **SEC-072** The server uses `warp-tls` defaults and does not enable obsolete protocol versions or weak cipher suites.
 - **SEC-073** The certificate must match the public hostname. The server does not validate this; it is the operator's responsibility.
 - **SEC-074** The client validates certificates by default. `--insecure` disables validation and prints a warning.

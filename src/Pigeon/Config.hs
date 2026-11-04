@@ -4,6 +4,7 @@ module Pigeon.Config (
   lookupEnvText,
   normalizeBaseUrl,
   parseBaseUrlText,
+  parseEnvBool,
   requireToken,
   tokenFromSources,
   exitWithText,
@@ -41,9 +42,17 @@ runParser program parserInfo = do
   case execParserPure defaultPrefs parserInfo args of
     Success parsed -> pure parsed
     Failure failure -> do
-      let (message, _) = renderFailure failure program
-      hPutStrLn stderr message
-      exitWith (ExitFailure 2)
+      let (message, exitCode) = renderFailure failure program
+      case exitCode of
+        -- CLI-006: --help and --version print to stdout and exit 0.
+        ExitSuccess -> do
+          putStrLn message
+          exitSuccess
+        -- CLI-004: every other parser failure, including missing arguments,
+        -- is a usage error with exit code 2.
+        ExitFailure _ -> do
+          hPutStrLn stderr message
+          exitWith (ExitFailure 2)
     CompletionInvoked completion -> do
       message <- execCompletion completion program
       putStr message
@@ -58,6 +67,24 @@ lookupEnvText name = do
     Just raw ->
       let envText = T.pack raw
        in if T.null (T.strip envText) then Nothing else Just envText
+
+{- | Parse a boolean environment flag. Accepts @1@, @true@, @yes@, @on@ for
+'True' and @0@, @false@, @no@, @off@ for 'False', case-insensitively and
+ignoring surrounding whitespace. Anything else is rejected so that a typo
+never silently enables or disables a security-relevant option.
+-}
+parseEnvBool :: Text -> Either Text Bool
+parseEnvBool raw =
+  case T.toLower (T.strip raw) of
+    "1" -> Right True
+    "true" -> Right True
+    "yes" -> Right True
+    "on" -> Right True
+    "0" -> Right False
+    "false" -> Right False
+    "no" -> Right False
+    "off" -> Right False
+    _ -> Left "expected one of: 1, true, yes, on, 0, false, no, off"
 
 -- | Read the first line of a token file, stripping trailing CR/LF.
 readTokenFile :: FilePath -> IO (Either Text Text)

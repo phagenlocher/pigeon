@@ -27,6 +27,7 @@ import Pigeon.Config (
   lookupEnvText,
   normalizeBaseUrl,
   parseByteCount,
+  parseEnvBool,
   parsePositiveInt,
   requireToken,
   runParser,
@@ -204,6 +205,7 @@ parseServerConfig = do
   envToken <- lookupEnvText "PIGEON_TOKEN"
   envCert <- fmap T.unpack <$> lookupEnvText "PIGEON_TLS_CERT"
   envKey <- fmap T.unpack <$> lookupEnvText "PIGEON_TLS_KEY"
+  envNoTls <- lookupEnvText "PIGEON_NO_TLS"
   envPublicUrl <- lookupEnvText "PIGEON_PUBLIC_URL"
   envDefaultExpiry <- lookupEnvText "PIGEON_DEFAULT_EXPIRY"
   envMaxExpiry <- lookupEnvText "PIGEON_MAX_EXPIRY"
@@ -212,8 +214,14 @@ parseServerConfig = do
   envIterations <- lookupEnvText "PIGEON_PASSWORD_HASH_ITERATIONS"
 
   raw <- runParser "pigeon-server" serverParserInfo
+  envNoTlsFlag <- case envNoTls of
+    Nothing -> pure False
+    Just envValue -> case parseEnvBool envValue of
+      Right enabled -> pure enabled
+      Left err -> exitWithText 2 ("error: PIGEON_NO_TLS: " <> err)
   let pick :: Maybe a -> Maybe a -> Maybe a
       pick cli env = cli <|> env
+      noTls = roNoTls raw || envNoTlsFlag
       host = fromMaybe "127.0.0.1" (pick (roHost raw) envHost)
       portText = fromMaybe "8080" (pick (roPort raw) envPort)
       dataDirText = fromMaybe "./data" (pick (roDataDir raw) envDataDir)
@@ -236,10 +244,10 @@ parseServerConfig = do
   maxUploadSize <- parseOrExit "max-upload-size" (parseByteCount maxUploadText)
   iterations <- parseOrExit "password-hash-iterations" (parsePositiveInt iterationsText)
 
-  when (roNoTls raw && (isJust cert || isJust key)) $ do
-    exitWithText 2 "error: --no-tls cannot be combined with --tls-cert or --tls-key"
+  when (noTls && (isJust cert || isJust key)) $ do
+    exitWithText 2 "error: --no-tls or PIGEON_NO_TLS cannot be combined with --tls-cert or --tls-key"
 
-  tlsMode <- case (roNoTls raw, cert, key) of
+  tlsMode <- case (noTls, cert, key) of
     (True, _, _) -> pure TlsDisabled
     (False, Just c, Just k) -> do
       cExists <- doesFileExist c

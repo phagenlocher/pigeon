@@ -1,0 +1,5 @@
+-- Release profile: the whole build, dependencies included, at -O2.
+import: cabal.project
+
+package *
+  optimization: 2
