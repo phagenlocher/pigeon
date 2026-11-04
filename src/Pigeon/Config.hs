@@ -42,9 +42,17 @@ runParser program parserInfo = do
   case execParserPure defaultPrefs parserInfo args of
     Success parsed -> pure parsed
     Failure failure -> do
-      let (message, _) = renderFailure failure program
-      hPutStrLn stderr message
-      exitWith (ExitFailure 2)
+      let (message, exitCode) = renderFailure failure program
+      case exitCode of
+        -- CLI-006: --help and --version print to stdout and exit 0.
+        ExitSuccess -> do
+          putStrLn message
+          exitSuccess
+        -- CLI-004: every other parser failure, including missing arguments,
+        -- is a usage error with exit code 2.
+        ExitFailure _ -> do
+          hPutStrLn stderr message
+          exitWith (ExitFailure 2)
     CompletionInvoked completion -> do
       message <- execCompletion completion program
       putStr message

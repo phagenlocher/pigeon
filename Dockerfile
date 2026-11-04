@@ -19,9 +19,6 @@ ARG TARGETARCH
 
 WORKDIR /src
 
-RUN --mount=type=cache,id=cabal-packages,sharing=locked,target=/root/.cabal/packages \
-    cabal update
-
 # The sources must be present before the first build: the executables depend on
 # the local library, so `--dependencies-only` would still configure and compile
 # it. Dependency reuse comes from the store cache mount below, not from a
@@ -40,10 +37,16 @@ COPY src /src/src
 # `cabal build` wrote to.
 ARG CABAL_PROJECT_FILE=cabal.project
 
+# `cabal update` runs in the same layer as the build on purpose. The package
+# index lives in the cache mount, not in the image, so a cached `cabal update`
+# layer would be skipped on a fresh runner and leave the mount empty, making
+# the solver fail with no package list. Running it here costs a few seconds
+# against a warm mount and always leaves a usable index.
 RUN --mount=type=cache,id=cabal-packages,sharing=locked,target=/root/.cabal/packages \
     --mount=type=cache,id=cabal-store-${TARGETARCH},target=/root/.cabal/store \
     --mount=type=cache,id=pigeon-dist-${TARGETARCH},target=/src/dist-newstyle \
-    cabal build --project-file=${CABAL_PROJECT_FILE} --disable-tests -j \
+    cabal update \
+ && cabal build --project-file=${CABAL_PROJECT_FILE} --disable-tests -j \
       exe:pigeon-server exe:pigeon-client \
  && mkdir -p /out \
  && install -m 0755 "$(cabal list-bin --project-file=${CABAL_PROJECT_FILE} exe:pigeon-server)" /out/pigeon-server \
