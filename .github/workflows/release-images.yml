@@ -378,6 +378,10 @@ jobs:
       - name: Append image pull commands
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # This job has no checkout, so gh cannot discover the repository from
+          # a git remote and fails with "not a git repository". GH_REPO is the
+          # environment equivalent of `gh --repo`.
+          GH_REPO: ${{ github.repository }}
           TAG: ${{ github.event.release.tag_name }}
           VERSION: ${{ needs.prepare.outputs.version }}
           SERVER_IMAGE: ${{ needs.prepare.outputs.server-image }}
