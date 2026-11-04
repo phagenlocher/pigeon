@@ -7,8 +7,13 @@
 #   docker buildx build --platform linux/amd64,linux/arm64 \
 #       --target server -t ghcr.io/you/pigeon-server:0.1.0 --push .
 #
-# The build stage runs on the *target* platform (arm64 under QEMU/binfmt), so
-# no Haskell cross-compilation is involved.
+# Publishing a GitHub release produces multi-arch manifest lists at
+# ghcr.io/<owner>/pigeon-server and ghcr.io/<owner>/pigeon-client.
+#
+# The build stage runs on the *target* platform, so no Haskell
+# cross-compilation and no QEMU is involved: releases build amd64 on
+# ubuntu-24.04 and arm64 on the native ubuntu-24.04-arm runner (see
+# .github/workflows/release-images.yml).
 
 # Keep in step with .github/workflows/ci.yml. The slim image is Debian
 # bookworm, which the runtime stage below must stay on for glibc/libgmp ABI
