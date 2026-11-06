@@ -557,7 +557,10 @@ main = hspec $ do
               }
       decode (encode info) `shouldBe` Just info
     it "serializes health and error envelopes" $ do
-      encode (Health "ok" "0.1.0.0") `shouldBe` "{\"status\":\"ok\",\"version\":\"0.1.0.0\"}"
+      encode (Health "ok" pigeonVersion)
+        `shouldBe` "{\"status\":\"ok\",\"version\":\""
+          <> LBS.fromStrict (encodeUtf8 pigeonVersion)
+          <> "\"}"
       encode (ApiErrorEnvelope (ApiError "invalid_request" "bad"))
         `shouldBe` "{\"error\":{\"code\":\"invalid_request\",\"message\":\"bad\"}}"
 
@@ -933,7 +936,10 @@ main = hspec $ do
     it "serves health without authentication" $ withTestServer $ \_ port -> do
       response <- requestWith port "/healthz" "GET" [] BS.empty
       statusCode (statusOf response) `shouldBe` 200
-      bodyOf response `shouldBe` "{\"status\":\"ok\",\"version\":\"0.1.0.0\"}"
+      bodyOf response
+        `shouldBe` "{\"status\":\"ok\",\"version\":\""
+          <> LBS.fromStrict (encodeUtf8 pigeonVersion)
+          <> "\"}"
     it "rejects an unauthenticated upload" $ withTestServer $ \_ port -> do
       response <-
         requestWith

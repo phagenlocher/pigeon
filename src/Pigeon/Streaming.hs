@@ -58,12 +58,12 @@ import System.IO (Handle)
 
 import Pigeon.Types (lowerAsciiChar)
 
-{- | Writes one chunk of a WAI response body to the client. -}
+-- | Writes one chunk of a WAI response body to the client.
 newtype ResponseChunkWriter = ResponseChunkWriter
   { writeResponseChunk :: Builder -> IO ()
   }
 
-{- | Flushes buffered data in a WAI response body to the client. -}
+-- | Flushes buffered data in a WAI response body to the client.
 newtype ResponseBodyFlush = ResponseBodyFlush
   { flushResponseBody :: IO ()
   }

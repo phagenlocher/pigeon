@@ -37,7 +37,7 @@ import Pigeon.Config (
   tokenFromSources,
  )
 import Pigeon.Duration (parseDuration)
-import Pigeon.Types (Secret, mkSecret)
+import Pigeon.Types (Secret, mkSecret, pigeonVersion)
 
 -- | Where a file password comes from.
 data PasswordSource
@@ -196,7 +196,7 @@ clientParserInfo =
   versionOption :: Parser (a -> a)
   versionOption =
     infoOption
-      "0.1.0.0"
+      (T.unpack pigeonVersion)
       (long "version" <> help "Print version and exit")
 
 {- | Parse global options and the subcommand, resolve the config file and

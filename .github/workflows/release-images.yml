@@ -32,7 +32,6 @@ on:
       version:
         description: Version to publish; must equal `version:` in pigeon.cabal
         required: true
-        default: '0.1.0.0'
         type: string
       prerelease:
         description: Skip the `latest` tag

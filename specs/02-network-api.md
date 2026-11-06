@@ -182,8 +182,8 @@ Delete a file.
 
 - **NET-043** Public, no authentication.
 - **NET-044** Checks the SQLite connection with `SELECT 1`.
-- **NET-045** Healthy: `200` with `{"status":"ok","version":"0.1.0.0"}`.
-- **NET-046** Unhealthy: `503` with `{"status":"unavailable","version":"0.1.0.0"}`.
+- **NET-045** Healthy: `200` with `{"status":"ok","version":"<version>"}`.
+- **NET-046** Unhealthy: `503` with `{"status":"unavailable","version":"<version>"}`.
 - **NET-047** Health responses set `Cache-Control: no-store`.
 
 ### 4.5 `GET /f/{id}`

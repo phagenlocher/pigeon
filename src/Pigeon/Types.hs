@@ -57,12 +57,18 @@ import Data.Time (
  )
 import Data.Time.Clock.POSIX (posixSecondsToUTCTime, utcTimeToPOSIXSeconds)
 import Data.ULID.Base32 qualified as Base32
+import Data.Version (showVersion)
 import Data.Word (Word8)
 import Servant.API (FromHttpApiData (..), ToHttpApiData (..))
 
--- | Pigeon's package version, reported by @\/healthz@ and @--version@.
+import Paths_pigeon qualified as Paths (version)
+
+{- | Pigeon's package version, reported by @\/healthz@ and @--version@. Read
+from Cabal's generated @Paths_pigeon@ module so the @version@ field in
+@pigeon.cabal@ is the only place a release number is written.
+-}
 pigeonVersion :: Text
-pigeonVersion = "0.1.0.0"
+pigeonVersion = T.pack (showVersion Paths.version)
 
 {- | An opaque file identifier.
 
