@@ -6,7 +6,7 @@ against a real Warp server on an ephemeral port.
 -}
 module Main (main) where
 
-import Control.Exception.Safe (SomeException, throwIO, try)
+import Control.Exception.Safe (SomeException, bracket_, throwIO, try)
 import Control.Monad (void)
 import Data.Aeson (decode, encode)
 import Data.Bits ((.&.))
@@ -16,7 +16,7 @@ import Data.ByteString.Lazy qualified as LBS
 import Data.Conduit (runConduitRes, yield, (.|))
 import Data.Conduit.Combinators (sinkList)
 import Data.Conduit.Zlib (gzip, ungzip)
-import Data.Either (isLeft, isRight)
+import Data.Either (fromLeft, isLeft, isRight)
 import Data.IORef (IORef, atomicModifyIORef', newIORef, readIORef)
 import Data.Int (Int64)
 import Data.List (elemIndex, nub)
@@ -33,9 +33,11 @@ import System.Directory (
   createDirectory,
   doesDirectoryExist,
   doesFileExist,
+  getHomeDirectory,
   listDirectory,
   removeFile,
  )
+import System.Environment (setEnv, unsetEnv)
 import System.FilePath ((</>))
 import System.IO (IOMode (ReadMode), withBinaryFile)
 import System.Posix.Files (
@@ -55,6 +57,17 @@ import Pigeon.Client.Config (
   DeleteOptions (..),
   PasswordSource (..),
   UploadOptions (..),
+ )
+import Pigeon.Client.ConfigFile (
+  FileConfig (..),
+  TokenLayer (..),
+  decodeFileConfig,
+  emptyFileConfig,
+  expandHomePath,
+  loadFileConfig,
+  redactSecretValues,
+  resolveServerText,
+  selectTokenLayer,
  )
 import Pigeon.Client.Output (
   estimateEta,
@@ -91,6 +104,11 @@ uploadOptions noCompress =
       uoNoCompress = noCompress
     }
 
+-- | Run an action with @XDG_CONFIG_HOME@ pointed at a temporary directory.
+withXdgConfigHome :: FilePath -> IO a -> IO a
+withXdgConfigHome dir =
+  bracket_ (setEnv "XDG_CONFIG_HOME" dir) (unsetEnv "XDG_CONFIG_HOME")
+
 main :: IO ()
 main = hspec $ do
   describe "Pigeon.Duration" $ do
@@ -123,6 +141,157 @@ main = hspec $ do
       mapM_
         (\value -> parseEnvBool value `shouldSatisfy` isLeft)
         ["2", "maybe", "y", "n", "tls"]
+
+  describe "client config file" $ do
+    it "decodes every supported key (CLI-045)" $
+      decodeFileConfig
+        ( T.unlines
+            [ "# pigeon client configuration",
+              "server = \"https://files.example.com\"",
+              "token = \"config-token-at-least-16-chars\"",
+              "insecure = false",
+              "no-http-warning = true"
+            ]
+        )
+        `shouldBe` Right
+          FileConfig
+            { fcServer = Just "https://files.example.com",
+              fcToken = Just "config-token-at-least-16-chars",
+              fcTokenFile = Nothing,
+              fcInsecure = Just False,
+              fcNoHttpWarning = Just True
+            }
+
+    it "treats an empty or comment-only file as an empty config (CLI-044)" $ do
+      decodeFileConfig "" `shouldBe` Right emptyFileConfig
+      decodeFileConfig "# nothing here\n" `shouldBe` Right emptyFileConfig
+
+    it "rejects unknown keys by name without echoing the value (CLI-045)" $ do
+      let result :: Either Text FileConfig
+          result = decodeFileConfig "srvr = \"https://evil.example.com\"\n"
+      result `shouldSatisfy` isLeft
+      let message :: Text
+          message = fromLeft "" result
+      message `shouldSatisfy` T.isInfixOf "srvr"
+      message `shouldSatisfy` not . T.isInfixOf "evil"
+
+    it "does not echo the token on a type error (CLI-048)" $ do
+      let result :: Either Text FileConfig
+          result = decodeFileConfig "token = 9876543210987654\n"
+      result `shouldSatisfy` isLeft
+      let message :: Text
+          message = fromLeft "" result
+      message `shouldSatisfy` T.isInfixOf "'token'"
+      message `shouldSatisfy` not . T.isInfixOf "98765432"
+
+    it "does not echo the token on a syntax error inside its value (CLI-048)" $ do
+      let result :: Either Text FileConfig
+          result = decodeFileConfig "server = \"https://files.example.com\"\ntoken = \"TOPSECRETVALUE\n"
+      result `shouldSatisfy` isLeft
+      let message :: Text
+          message = fromLeft "" result
+      message `shouldSatisfy` not . T.isInfixOf "TOPSECRET"
+
+    it "reports line and column for a syntax error elsewhere (CLI-048)" $ do
+      let result :: Either Text FileConfig
+          result = decodeFileConfig "insecure = maybe\n"
+      result `shouldSatisfy` isLeft
+      let message :: Text
+          message = fromLeft "" result
+      message `shouldSatisfy` T.isInfixOf "line 1"
+
+    it "redacts single-line secret assignments and keeps other lines" $
+      redactSecretValues
+        (T.unlines ["a = 1", "token = \"x\"", "  token-file = '~/t'", "b = 2"])
+        `shouldBe` T.unlines ["a = 1", "token = \"REDACTED\"", "token-file = \"REDACTED\"", "b = 2"]
+
+    it "redacts multi-line secret strings without shifting line numbers" $
+      redactSecretValues
+        (T.unlines ["token = \"\"\"", "abc", "def\"\"\"", "server = \"s\""])
+        `shouldBe` T.unlines ["token = \"REDACTED\"", "#", "#", "server = \"s\""]
+
+    it "applies the documented token precedence (CLI-046)" $ do
+      let fileConfig :: FileConfig
+          fileConfig =
+            emptyFileConfig
+              { fcToken = Just "file-token-value",
+                fcTokenFile = Just "/tmp/file-token-path"
+              }
+      selectTokenLayer (Just "flag") Nothing (Just "env") fileConfig
+        `shouldBe` Right (TokenText "flag")
+      selectTokenLayer Nothing (Just "/flag/path") (Just "env") fileConfig
+        `shouldBe` Right (TokenPath "/flag/path")
+      selectTokenLayer Nothing Nothing (Just "env") fileConfig
+        `shouldBe` Right (TokenText "env")
+      selectTokenLayer Nothing Nothing Nothing fileConfig{fcTokenFile = Nothing}
+        `shouldBe` Right (TokenText "file-token-value")
+      selectTokenLayer Nothing Nothing Nothing fileConfig{fcToken = Nothing}
+        `shouldBe` Right (TokenPath "/tmp/file-token-path")
+
+    it "rejects mutually exclusive CLI token sources (CLI-022)" $
+      selectTokenLayer (Just "flag") (Just "/path") Nothing emptyFileConfig
+        `shouldSatisfy` isLeft
+
+    it "rejects mutually exclusive config token sources (CLI-046)" $
+      selectTokenLayer
+        Nothing
+        Nothing
+        Nothing
+        emptyFileConfig{fcToken = Just "a", fcTokenFile = Just "/b"}
+        `shouldSatisfy` isLeft
+
+    it "reports a missing token across every layer (CLI-027)" $
+      selectTokenLayer Nothing Nothing Nothing emptyFileConfig
+        `shouldSatisfy` isLeft
+
+    it "applies the documented server precedence (CLI-010, CLI-046)" $ do
+      let fileConfig :: FileConfig
+          fileConfig = emptyFileConfig{fcServer = Just "https://from-file.example.com"}
+      resolveServerText (Just "https://flag.example.com") (Just "https://env.example.com") fileConfig
+        `shouldBe` ("https://flag.example.com", "--server")
+      resolveServerText Nothing (Just "https://env.example.com") fileConfig
+        `shouldBe` ("https://env.example.com", "--server")
+      resolveServerText Nothing Nothing fileConfig
+        `shouldBe` ("https://from-file.example.com", "config 'server'")
+      resolveServerText Nothing Nothing emptyFileConfig
+        `shouldBe` ("http://127.0.0.1:8080", "--server")
+
+    it "expands ~ in config paths" $ do
+      home <- getHomeDirectory
+      expanded <- expandHomePath "~/token.txt"
+      expanded `shouldBe` home </> "token.txt"
+
+    it "fails when an explicit --config file is missing (CLI-047)" $
+      withTempDataDir $ \dir -> do
+        result <- loadFileConfig (Just (dir </> "missing.toml"))
+        result `shouldSatisfy` isLeft
+        let message :: Text
+            message = fromLeft "" result
+        message `shouldSatisfy` T.isInfixOf "--config"
+
+    it "ignores a missing file at the default path (CLI-047)" $
+      withTempDataDir $ \dir ->
+        withXdgConfigHome dir $ do
+          result <- loadFileConfig Nothing
+          result `shouldBe` Right emptyFileConfig
+
+    it "reads the default XDG config file when present (CLI-044)" $
+      withTempDataDir $ \dir ->
+        withXdgConfigHome dir $ do
+          createDirectory (dir </> "pigeon")
+          writeFile
+            (dir </> "pigeon" </> "config.toml")
+            "server = \"https://files.example.com\"\n"
+          result <- loadFileConfig Nothing
+          fmap fcServer result `shouldBe` Right (Just "https://files.example.com")
+
+    it "reads an explicit --config file (CLI-044)" $
+      withTempDataDir $ \dir -> do
+        let path :: FilePath
+            path = dir </> "client.toml"
+        writeFile path "token-file = \"~/.pigeon-token\"\n"
+        result <- loadFileConfig (Just path)
+        fmap fcTokenFile result `shouldBe` Right (Just "~/.pigeon-token")
 
   describe "server public URL" $ do
     it "uses the bind host and keeps a non-default port" $ do

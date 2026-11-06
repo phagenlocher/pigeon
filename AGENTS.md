@@ -93,6 +93,7 @@ src/Pigeon/
     Log.hs                  -- request and application logging
   Client/
     Config.hs               -- client options and token resolution
+    ConfigFile.hs           -- TOML config file (--config), redacted errors
     Api.hs                  -- Servant client environment and error mapping
     Commands.hs             -- upload/list/delete implementations
     Output.hs               -- tables, JSON, progress, formatting

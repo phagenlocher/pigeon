@@ -32,8 +32,8 @@ Pigeon is not a multi-tenant service. A valid upload token grants full control o
 - **SEC-014** The token is accepted only from the `Authorization: Bearer ...` header. It is never read from a query parameter, cookie, or form field.
 - **SEC-015** The token is never logged, stored in the database, included in error messages, or echoed in HTML.
 - **SEC-016** The server wraps the token in a `Secret` newtype whose `Show` prints `<redacted>`.
-- **SEC-017** The client accepts the token from `--token`, `--token-file`, or `PIGEON_TOKEN`. Production deployments should prefer `--token-file` or the environment to avoid process-list exposure.
-- **SEC-018** `--token-file` must be readable only by the service user; the server does not enforce file permissions, but operators should use `0600`.
+- **SEC-017** The client accepts the token from `--token`, `--token-file`, `PIGEON_TOKEN`, or the `token`/`token-file` keys of its TOML config file (`05-client.md` §3.5). Production deployments should prefer `--token-file`, the config file, or the environment to avoid process-list exposure.
+- **SEC-018** `--token-file` must be readable only by the service user; the server does not enforce file permissions, but operators should use `0600`. The same applies to a client config file that stores `token` inline. Config file errors never echo token values (CLI-048).
 - **SEC-019** Token rotation is performed by restarting the server with a new token. There is no multi-token or grace-period support in v1.
 - **SEC-020** The client refuses to follow HTTP redirects, so the token cannot be forwarded to another host.
 - **SEC-021** The client warns when it sends a token over plain HTTP. The warning is printed even with `--quiet`.

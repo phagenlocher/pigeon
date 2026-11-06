@@ -41,6 +41,7 @@ Global options:
   --server URL             Server base URL (env: PIGEON_SERVER)
   --token TOKEN            Bearer token (env: PIGEON_TOKEN)
   --token-file FILE        Read the token from the first line of FILE
+  --config FILE            TOML config file (default: $XDG_CONFIG_HOME/pigeon/config.toml)
   --insecure               Disable TLS certificate validation (development only)
   --timeout DURATION       Request timeout (default: 1h)
   --json                   Machine-readable output
@@ -61,11 +62,11 @@ Global options:
 
 ### 3.1 Server URL
 
-- **CLI-010** `--server` defaults to `PIGEON_SERVER`, then `http://127.0.0.1:8080`.
+- **CLI-010** `--server` defaults to `PIGEON_SERVER`, then the config file's `server` key (CLI-046), then `http://127.0.0.1:8080`.
 - **CLI-011** The URL must be absolute with scheme `http` or `https`, a host, an optional port, and no path, query, or fragment other than `/`.
 - **CLI-012** A trailing `/` is removed before use.
 - **CLI-013** The base URL is parsed with `servant-client`'s `parseBaseUrl`; a parse failure is a usage error.
-- **CLI-014** If the scheme is `http` and a token will be sent, print this warning to stderr, even with `--quiet`:
+- **CLI-014** If the scheme is `http` and a token will be sent, print this warning to stderr, even with `--quiet`, unless the config file sets `no-http-warning = true` (CLI-049):
   ```
   warning: sending the upload token over plain HTTP; use TLS outside development
   ```
@@ -73,13 +74,13 @@ Global options:
 ### 3.2 Token
 
 - **CLI-020** A token is required for `upload`, `list`, and `delete`.
-- **CLI-021** Sources are `--token`, `--token-file`, and `PIGEON_TOKEN`.
-- **CLI-022** If both `--token` and `--token-file` are supplied, that is a usage error.
-- **CLI-023** Precedence is `--token`, then `--token-file`, then `PIGEON_TOKEN`.
+- **CLI-021** Sources are `--token`, `--token-file`, `PIGEON_TOKEN`, and the config file's `token` or `token-file` key (CLI-046).
+- **CLI-022** If both `--token` and `--token-file` are supplied, that is a usage error. The same holds for `token` and `token-file` within the config file.
+- **CLI-023** Precedence is `--token`, then `--token-file`, then `PIGEON_TOKEN`, then config `token`, then config `token-file`.
 - **CLI-024** Token validation matches the server: 16–512 printable ASCII characters, no whitespace.
 - **CLI-025** `--token-file` reads the first line, strips trailing `\r`/`\n`, and rejects an empty result.
 - **CLI-026** The token is held in a `Secret` newtype and never printed, even by `--verbose`.
-- **CLI-027** A missing token is a usage error before any network call.
+- **CLI-027** A missing token is a usage error before any network call; the message names every source, including the config file.
 
 ### 3.3 TLS
 
@@ -99,6 +100,15 @@ Global options:
 - **CLI-041** The value uses the duration grammar in section 9 and must be at least `1s`.
 - **CLI-042** The timeout is applied as the HTTP manager's response timeout. Large uploads should use the default or a larger value.
 - **CLI-043** A timeout is a network failure (exit `5`).
+
+### 3.5 Configuration file
+
+- **CLI-044** `--config FILE` reads client defaults from a TOML file. Without the flag, the client uses `$XDG_CONFIG_HOME/pigeon/config.toml`, which defaults to `~/.config/pigeon/config.toml`. A missing file at the default path is silently ignored.
+- **CLI-045** The supported keys are `server` (string), `token` (string), `token-file` (string), `insecure` (bool), and `no-http-warning` (bool); all are optional and top-level. Unknown top-level keys are a usage error whose message names the key but never its value. A present key with a wrong-typed value is a usage error, never a silent fallback to the default. A config `token-file` path may start with `~`, which expands to the home directory.
+- **CLI-046** Precedence is CLI flag, then environment variable, then config file, then built-in default: `--server` > `PIGEON_SERVER` > config `server`, and `--token` > `--token-file` > `PIGEON_TOKEN` > config `token` > config `token-file`.
+- **CLI-047** An explicit `--config` path that does not exist or cannot be read is a usage error (exit `2`).
+- **CLI-048** Malformed TOML is a usage error (exit `2`). The message includes a line and column where known and never echoes a `token` or `token-file` value: those values are redacted from the file text before any parser message is rendered, and a syntax error confined to a redacted value is reported generically.
+- **CLI-049** Config `insecure = true` is OR-ed with the `--insecure` flag, and the CLI-031 warning still prints when the result is enabled. `no-http-warning = true` suppresses the CLI-014 plain-HTTP warning. `--timeout`, `--json`, `--quiet`, and `--verbose` are not supported in the config file in v1.
 
 ## 4. `upload`
 
@@ -302,6 +312,14 @@ unit     := integer ("s" | "m" | "h" | "d" | "w")
 ## 10. Examples
 
 ```bash
+# One-time setup, then flag-free uploads
+mkdir -p ~/.config/pigeon
+cat > ~/.config/pigeon/config.toml <<'EOF'
+server = "https://files.example.com"
+token-file = "~/.pigeon-token"
+EOF
+pigeon-client upload ./report.pdf
+
 # Upload with the server's default expiry
 pigeon-client --server https://files.example.com --token-file ~/.pigeon-token \
   upload ./report.pdf
@@ -351,3 +369,5 @@ pigeon-client --server https://files.example.com --token-file ~/.pigeon-token \
 - **CLI-A15** A missing local file exits `7`.
 - **CLI-A16** A token is never visible in process arguments when `--token-file` or `PIGEON_TOKEN` is used.
 - **CLI-A17** The client refuses to follow HTTP redirects.
+- **CLI-A18** With a config file supplying `server` and a token, `pigeon-client upload FILE` succeeds with no flags and no environment variables.
+- **CLI-A19** Error output for a malformed config file never contains the file's `token` or `token-file` value.

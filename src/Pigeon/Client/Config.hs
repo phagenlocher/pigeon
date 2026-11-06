@@ -19,6 +19,14 @@ import Options.Applicative
 import Servant.Client.Core (BaseUrl (..), Scheme (..))
 import System.IO (stderr)
 
+import Pigeon.Client.ConfigFile (
+  FileConfig (..),
+  TokenLayer (..),
+  expandConfigPaths,
+  loadFileConfig,
+  resolveServerText,
+  selectTokenLayer,
+ )
 import Pigeon.Config (
   exitWithText,
   lookupEnvText,
@@ -100,6 +108,7 @@ data RawGlobal = RawGlobal
   { rgServer :: Maybe Text,
     rgToken :: Maybe Text,
     rgTokenFile :: Maybe FilePath,
+    rgConfigFile :: Maybe FilePath,
     rgInsecure :: Bool,
     rgTimeout :: Maybe Int64,
     rgJson :: Bool,
@@ -121,6 +130,13 @@ globalParser =
       (strOption (long "token" <> metavar "TOKEN" <> help "Bearer token (env: PIGEON_TOKEN)"))
     <*> optional
       (strOption (long "token-file" <> metavar "FILE" <> help "Read the token from the first line of FILE"))
+    <*> optional
+      ( strOption
+          ( long "config"
+              <> metavar "FILE"
+              <> help "TOML config file (default: $XDG_CONFIG_HOME/pigeon/config.toml)"
+          )
+      )
     <*> switch (long "insecure" <> help "Disable TLS certificate validation (development only)")
     <*> optional
       (durationSecondsOption (long "timeout" <> metavar "DURATION" <> help "Request timeout (default 1h)"))
@@ -183,9 +199,12 @@ clientParserInfo =
       "0.1.0.0"
       (long "version" <> help "Print version and exit")
 
-{- | Parse global options and the subcommand, resolve environment fallbacks,
-and validate everything that can be checked before a network call. Transport
-warnings are always written to stderr, even with @--quiet@.
+{- | Parse global options and the subcommand, resolve the config file and
+environment fallbacks, and validate everything that can be checked before a
+network call. Precedence is flag, then environment, then config file
+(CLI-046). Transport warnings are always written to stderr, even with
+@--quiet@, except for the plain-HTTP warning when the config file sets
+@no-http-warning = true@ (CLI-049).
 -}
 parseClientConfig :: IO ClientConfig
 parseClientConfig = do
@@ -199,14 +218,26 @@ parseClientConfig = do
   when (rgQuiet && rgVerbose) $
     exitWithText 2 "error: --quiet and --verbose are mutually exclusive"
 
-  let serverText = fromMaybe "http://127.0.0.1:8080" (rgServer <|> envServer)
+  loadedConfig <- loadFileConfig rgConfigFile
+  fileConfig <- case loadedConfig of
+    Left message -> exitWithText 2 ("error: " <> message)
+    Right config -> expandConfigPaths config
+
+  let (serverText, serverSource) = resolveServerText rgServer envServer fileConfig
   serverBase <- case normalizeBaseUrl serverText of
-    Left message -> exitWithText 2 ("error: --server: " <> message)
+    Left message -> exitWithText 2 ("error: " <> serverSource <> ": " <> message)
     Right normalized -> case parseBaseUrlText normalized of
-      Left message -> exitWithText 2 ("error: --server: " <> message)
+      Left message -> exitWithText 2 ("error: " <> serverSource <> ": " <> message)
       Right base -> pure (base, normalized)
 
-  token <- requireToken =<< tokenFromSources rgToken rgTokenFile envToken
+  tokenLayer <- case selectTokenLayer rgToken rgTokenFile envToken fileConfig of
+    Left message -> exitWithText 2 ("error: " <> message)
+    Right layer -> pure layer
+  token <-
+    requireToken
+      =<< case tokenLayer of
+        TokenText tokenText -> tokenFromSources (Just tokenText) Nothing Nothing
+        TokenPath path -> tokenFromSources Nothing (Just path) Nothing
 
   timeout <- case rgTimeout of
     Nothing -> pure 3600
@@ -215,12 +246,14 @@ parseClientConfig = do
 
   validatedCommand <- validateCommand clientCommand
 
-  let (baseUrl, serverUrlText) = serverBase
-  when ("http://" `T.isPrefixOf` serverUrlText) $
+  let insecure = rgInsecure || fromMaybe False (fcInsecure fileConfig)
+      noHttpWarning = fromMaybe False (fcNoHttpWarning fileConfig)
+      (baseUrl, serverUrlText) = serverBase
+  when ("http://" `T.isPrefixOf` serverUrlText && not noHttpWarning) $
     TIO.hPutStrLn
       stderr
       "warning: sending the upload token over plain HTTP; use TLS outside development"
-  when (rgInsecure && "https://" `T.isPrefixOf` serverUrlText) $
+  when (insecure && "https://" `T.isPrefixOf` serverUrlText) $
     TIO.hPutStrLn stderr "warning: TLS certificate validation is disabled"
 
   pure
@@ -228,7 +261,7 @@ parseClientConfig = do
       { ccServer = baseUrl,
         ccServerText = serverUrlText,
         ccToken = token,
-        ccInsecure = rgInsecure,
+        ccInsecure = insecure,
         ccTimeoutSeconds = timeout,
         ccJson = rgJson,
         ccQuiet = rgQuiet,
