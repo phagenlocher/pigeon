@@ -3,13 +3,22 @@ module Pigeon.Server.Web (
   webHandler,
   robotsHandler,
   htmlError,
+  streamFileBody,
 ) where
 
-import Control.Exception.Safe (IOException, catch, try)
+import Control.Exception.Safe (
+  Exception,
+  IOException,
+  catch,
+  catchAny,
+  finally,
+  throwIO,
+  try,
+ )
 import Control.Monad (when)
 import Control.Monad.IO.Class (liftIO)
 import Control.Monad.Reader (ask)
-import Control.Monad.Trans.Resource (runResourceT)
+import Control.Monad.Trans.Resource (ResourceT, runResourceT)
 import Data.ByteString (ByteString)
 import Data.ByteString qualified as BS
 import Data.ByteString.Builder qualified as Builder
@@ -64,7 +73,15 @@ import Pigeon.Server.Db (lookupFile)
 import Pigeon.Server.Env (AppEnv (..))
 import Pigeon.Server.Log (logError, logWarn)
 import Pigeon.Server.Storage (openBlob)
-import Pigeon.Streaming (AcceptEncoding (..), parseAcceptEncoding, passThrough, ungzipConduit)
+import Pigeon.Streaming (
+  AcceptEncoding (..),
+  ResponseBodyFlush (..),
+  ResponseChunkWriter (..),
+  parseAcceptEncoding,
+  passThrough,
+  ungzipConduit,
+  waiStreamingBody,
+ )
 import Pigeon.Types (
   FileId (..),
   StoredFile (..),
@@ -160,13 +177,68 @@ serveFile stored request isHead =
               liftIO (closeHandle handle)
               pure (responseLBS status200 (fileHeaders stored encoding) "")
           | otherwise ->
-              pure $
-                responseStream status200 (fileHeaders stored encoding) $ \send flush -> do
-                  runResourceT
-                    $ runConduit
-                    $ sourceHandle handle
-                      .| (case encoding of AcceptGzip -> passThrough; _ -> ungzipConduit)
-                      .| CC.mapM_ (\chunk -> liftIO (send (Builder.byteString chunk) >> flush))
+              pure
+                $ responseStream status200 (fileHeaders stored encoding)
+                $ waiStreamingBody (streamFileBody handle encoding)
+
+{- | Marker for a response-body failure caused by the peer: an HTTP\/1
+connection reset or an HTTP\/2 @RST_STREAM@. This is expected and must not
+escape the body thread.
+
+Only 'sendChunk' throws this, and only for synchronous failures from
+'writeResponseChunk' or 'flushResponseBody'. Keeping it separate from other
+exceptions lets 'streamFileBody' ignore transport failures without also hiding
+file-read or decompression errors.
+-}
+data ClientAborted = ClientAborted
+  deriving (Show)
+
+instance Exception ClientAborted
+
+{- | Stream @handle@ into a WAI response body.
+
+HTTP\/2 runs the body on its own sender thread, so client disconnects surface
+as synchronous exceptions from the chunk writer or flush action and cannot be
+observed by Warp's 'setOnException'. Catch them here, where they are expected,
+and always close the blob handle. Asynchronous exceptions, such as timeout and
+shutdown, are deliberately left alone.
+
+@StreamTerminated@ from @http2@ is not exposed, so transport failures are
+classified by where they are thrown: only the writer\/flush pair is wrapped.
+Errors from the source or decompressor are not swallowed; they propagate after
+the handle is closed.
+-}
+streamFileBody ::
+  -- | Open, read-only blob handle. Closed before the action finishes.
+  Handle ->
+  -- | Response encoding negotiated for the request.
+  AcceptEncoding ->
+  -- | Writes one chunk of the response body.
+  ResponseChunkWriter ->
+  -- | Flushes buffered response-body data.
+  ResponseBodyFlush ->
+  IO ()
+streamFileBody handle encoding (ResponseChunkWriter writeChunk) (ResponseBodyFlush flushBody) =
+  (streamHandle `catch` \(_ :: ClientAborted) -> pure ())
+    `finally` closeHandle handle
+ where
+  streamHandle :: IO ()
+  streamHandle =
+    runResourceT
+      ( runConduit $
+          sourceHandle handle
+            .| encodingConduit
+            .| CC.mapM_ sendChunk
+      )
+
+  encodingConduit :: ConduitT ByteString ByteString (ResourceT IO) ()
+  encodingConduit = case encoding of AcceptGzip -> passThrough; _ -> ungzipConduit
+
+  sendChunk :: ByteString -> ResourceT IO ()
+  sendChunk chunk =
+    liftIO $
+      (writeChunk (Builder.byteString chunk) >> flushBody)
+        `catchAny` \_ -> throwIO ClientAborted
 
 chosenEncoding :: Request -> AcceptEncoding
 chosenEncoding request =

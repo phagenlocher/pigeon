@@ -302,7 +302,7 @@ responseStream status200 headers $ \send flush ->
 - **SRV-124** Always set `Vary: Accept-Encoding`.
 - **SRV-125** Always set `Content-Disposition: attachment` with ASCII fallback and RFC 5987 `filename*`.
 - **SRV-126** Always set `X-Content-Type-Options: nosniff`, `Cache-Control: no-store`, `Referrer-Policy: no-referrer`, `X-Robots-Tag: noindex, nofollow`, and `X-Frame-Options: DENY`.
-- **SRV-127** If the client disconnects, the streaming exception is caught/ignored at the request boundary; the file handle is closed by `ResourceT`.
+- **SRV-127** If the client disconnects, the streaming exception is caught inside the `responseStream` callback and ignored. It must not escape the HTTP/2 per-stream sender thread, where Warp's `setOnException` cannot observe it. The blob handle is closed even when streaming aborts.
 - **SRV-128** A missing blob returns `404`.
 
 ### 8.4 HTML form

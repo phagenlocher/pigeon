@@ -2,6 +2,9 @@
 
 -- | Streaming helpers: gzip, counting, and @Accept-Encoding@ negotiation.
 module Pigeon.Streaming (
+  ResponseChunkWriter (..),
+  ResponseBodyFlush (..),
+  waiStreamingBody,
   sourceHandleChunked,
   gzipConduit,
   parallelGzipConduit,
@@ -28,6 +31,7 @@ import Control.Monad.Trans.Resource (ResourceT)
 import Data.Bits (shiftR)
 import Data.ByteString (ByteString)
 import Data.ByteString qualified as BS
+import Data.ByteString.Builder (Builder)
 import Data.ByteString.Char8 qualified as B8
 import Data.ByteString.Unsafe (unsafeUseAsCStringLen)
 import Data.Conduit
@@ -49,9 +53,30 @@ import Data.Streaming.Zlib (
 import Data.Word (Word32, Word8)
 import Foreign.C.Types (CUInt (..), CULong (..))
 import Foreign.Ptr (Ptr, castPtr)
+import Network.Wai (StreamingBody)
 import System.IO (Handle)
 
 import Pigeon.Types (lowerAsciiChar)
+
+{- | Writes one chunk of a WAI response body to the client. -}
+newtype ResponseChunkWriter = ResponseChunkWriter
+  { writeResponseChunk :: Builder -> IO ()
+  }
+
+{- | Flushes buffered data in a WAI response body to the client. -}
+newtype ResponseBodyFlush = ResponseBodyFlush
+  { flushResponseBody :: IO ()
+  }
+
+{- | Adapt a callback over named response-body actions to WAI's
+'StreamingBody'. This is the only place the raw WAI writer and flush actions
+are unwrapped.
+-}
+waiStreamingBody ::
+  (ResponseChunkWriter -> ResponseBodyFlush -> IO ()) ->
+  StreamingBody
+waiStreamingBody body write flush =
+  body (ResponseChunkWriter write) (ResponseBodyFlush flush)
 
 -- | Gzip compression conduit (level 6, the zlib default).
 gzipConduit :: (MonadThrow m, PrimMonad m) => ConduitT ByteString ByteString m ()

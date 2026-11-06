@@ -39,7 +39,7 @@ import System.Directory (
  )
 import System.Environment (setEnv, unsetEnv)
 import System.FilePath ((</>))
-import System.IO (IOMode (ReadMode), withBinaryFile)
+import System.IO (IOMode (ReadMode), hIsClosed, openBinaryFile, withBinaryFile)
 import System.Posix.Files (
   createSymbolicLink,
   fileMode,
@@ -89,6 +89,7 @@ import Pigeon.Server.Config (
 import Pigeon.Server.Db
 import Pigeon.Server.Storage
 import Pigeon.Server.Sweeper (SweepCounts (..), sweepShouldLog)
+import Pigeon.Server.Web (streamFileBody)
 import Pigeon.Streaming
 import Pigeon.Types
 import Support
@@ -890,6 +891,43 @@ main = hspec $ do
         createDirectory parent
         setFileMode parent 0o777
         expectPathFailure (openDb (parent </> "pigeon.db"))
+
+  describe "response body streaming" $ do
+    it "contains client disconnects and closes the blob handle (SRV-127)" $
+      withTempDataDir $ \dir -> do
+        let path = dir </> "blob"
+        BS.writeFile path "payload"
+        handle <- openBinaryFile path ReadMode
+        result <-
+          try
+            ( streamFileBody
+                handle
+                AcceptGzip
+                (ResponseChunkWriter (\_ -> throwIO (userError "client disconnected")))
+                (ResponseBodyFlush (pure ()))
+            ) ::
+            IO (Either SomeException ())
+        closed <- hIsClosed handle
+        result `shouldSatisfy` isRight
+        closed `shouldBe` True
+
+    it "closes the blob handle when streaming fails for another reason (SRV-127)" $
+      withTempDataDir $ \dir -> do
+        let path = dir </> "blob"
+        BS.writeFile path "not gzip"
+        handle <- openBinaryFile path ReadMode
+        result <-
+          try
+            ( streamFileBody
+                handle
+                AcceptIdentity
+                (ResponseChunkWriter (\_ -> pure ()))
+                (ResponseBodyFlush (pure ()))
+            ) ::
+            IO (Either SomeException ())
+        closed <- hIsClosed handle
+        result `shouldSatisfy` isLeft
+        closed `shouldBe` True
 
   describe "HTTP integration" $ do
     it "serves health without authentication" $ withTestServer $ \_ port -> do
