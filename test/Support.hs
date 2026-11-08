@@ -17,6 +17,7 @@ module Support (
   uploadWithPassword,
   uploadWithExpires,
   uploadWithExpiresEither,
+  uploadSlow,
   listFiles,
   deleteFile,
   download,
@@ -32,6 +33,7 @@ import Control.Concurrent (threadDelay)
 import Control.Concurrent.Async (Async, async, cancel, waitCatch)
 import Control.Exception.Safe (bracket, finally)
 import Control.Monad (void)
+import Control.Monad.IO.Class (liftIO)
 import Data.Base64.Types (extractBase64)
 import Data.ByteString (ByteString)
 import Data.ByteString qualified as BS
@@ -182,6 +184,23 @@ uploadWithExpires env filename expires bytes =
   expectRight
     =<< runClientM
       (uploadCall (Just authHeader) (Just filename) (Just expires) Nothing Nothing (yield bytes))
+      env
+
+{- | Upload a body that pauses between chunks. Used to verify that the expiry
+clock starts when the body finishes rather than when the request starts.
+-}
+uploadSlow :: ClientEnv -> Text -> Int64 -> Int -> ByteString -> IO FileInfo
+uploadSlow env filename expires microseconds bytes =
+  expectRight
+    =<< runClientM
+      ( uploadCall
+          (Just authHeader)
+          (Just filename)
+          (Just expires)
+          Nothing
+          Nothing
+          (yield bytes >> liftIO (threadDelay microseconds) >> yield bytes)
+      )
       env
 
 uploadWithExpiresEither :: ClientEnv -> Text -> Int64 -> IO (Either Int FileInfo)

@@ -23,7 +23,7 @@ import Data.List (elemIndex, nub)
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Text.Encoding (encodeUtf8)
-import Data.Time (UTCTime, addUTCTime, diffUTCTime, getCurrentTime)
+import Data.Time (addUTCTime, diffUTCTime, getCurrentTime)
 import Data.Word (Word8)
 import Database.SQLite.Simple (Only (..), query_)
 import Network.HTTP.Client (responseHeaders)
@@ -580,12 +580,11 @@ main = hspec $ do
       storage <- initStorage defaultStorageHooks dir
       db <- openDb (dir </> "pigeon.db")
       migrate db
-      now <- getCurrentTime
       let payload = BS.concat (replicate 100 "random-ish bytes")
           request =
             StoreRequest
               { srFilename = "data.bin",
-                srExpiresAt = addUTCTime 3600 now,
+                srLifetime = 3600,
                 srPasswordHash = Nothing,
                 srContentEncoding = Nothing,
                 srMaxUploadSize = 0,
@@ -602,11 +601,10 @@ main = hspec $ do
       storage <- initStorage defaultStorageHooks dir
       db <- openDb (dir </> "pigeon.db")
       migrate db
-      now <- getCurrentTime
       let payload = BS.concat (replicate 200 "compressible payload ")
       encoded <- gzipBytes payload
       stored <-
-        storeUpload storage db (storeRequest now (Just "gzip") encoded)
+        storeUpload storage db (storeRequest (Just "gzip") encoded)
           >>= either (fail . show) pure
       sfSize stored `shouldBe` fromIntegral (BS.length payload)
       sfStoredSize stored `shouldBe` fromIntegral (BS.length encoded)
@@ -617,12 +615,11 @@ main = hspec $ do
       storage <- initStorage defaultStorageHooks dir
       db <- openDb (dir </> "pigeon.db")
       migrate db
-      now <- getCurrentTime
       let payload = "payload"
       compressed <- gzipBytes payload
       let received = compressed <> "trailing bytes"
       stored <-
-        storeUpload storage db (storeRequest now (Just "gzip") received)
+        storeUpload storage db (storeRequest (Just "gzip") received)
           >>= either (fail . show) pure
       sfSize stored `shouldBe` fromIntegral (BS.length payload)
       blob <- BS.readFile (blobPath storage (sfId stored))
@@ -632,10 +629,9 @@ main = hspec $ do
       storage <- initStorage defaultStorageHooks dir
       db <- openDb (dir </> "pigeon.db")
       migrate db
-      now <- getCurrentTime
       let payload = BS.concat (replicate 2 (BS.replicate (gzipBlockSize + 1) 0x41))
       stored <-
-        storeUpload storage db (storeRequest now Nothing payload)
+        storeUpload storage db (storeRequest Nothing payload)
           >>= either (fail . show) pure
       sfSize stored `shouldBe` fromIntegral (BS.length payload)
       blob <- BS.readFile (blobPath storage (sfId stored))
@@ -647,9 +643,8 @@ main = hspec $ do
       storage <- initStorage defaultStorageHooks dir
       db <- openDb (dir </> "pigeon.db")
       migrate db
-      now <- getCurrentTime
       stored <-
-        storeUpload storage db (storeRequest now Nothing BS.empty)
+        storeUpload storage db (storeRequest Nothing BS.empty)
           >>= either (fail . show) pure
       sfSize stored `shouldBe` 0
       blob <- BS.readFile (blobPath storage (sfId stored))
@@ -666,7 +661,7 @@ main = hspec $ do
           request =
             StoreRequest
               { srFilename = "bad.gz",
-                srExpiresAt = addUTCTime 3600 now,
+                srLifetime = 3600,
                 srPasswordHash = Nothing,
                 srContentEncoding = Just "gzip",
                 srMaxUploadSize = 0,
@@ -682,12 +677,11 @@ main = hspec $ do
       storage <- initStorage defaultStorageHooks dir
       db <- openDb (dir </> "pigeon.db")
       migrate db
-      now <- getCurrentTime
       let request :: StoreRequest
           request =
             StoreRequest
               { srFilename = "big",
-                srExpiresAt = addUTCTime 3600 now,
+                srLifetime = 3600,
                 srPasswordHash = Nothing,
                 srContentEncoding = Nothing,
                 srMaxUploadSize = 4,
@@ -709,7 +703,7 @@ main = hspec $ do
           request =
             StoreRequest
               { srFilename = "bomb.gz",
-                srExpiresAt = addUTCTime 3600 now,
+                srLifetime = 3600,
                 srPasswordHash = Nothing,
                 srContentEncoding = Just "gzip",
                 srMaxUploadSize = limit,
@@ -734,7 +728,7 @@ main = hspec $ do
         db <- openDb (dir </> "pigeon.db")
         migrate db
         now <- getCurrentTime
-        result <- storeUpload storage db (storeRequest now Nothing "payload")
+        result <- storeUpload storage db (storeRequest Nothing "payload")
         result `shouldSatisfy` isLeft
         listLiveFiles db now `shouldReturn` []
         listDirectory (dir </> "files") `shouldReturn` []
@@ -753,7 +747,7 @@ main = hspec $ do
         db <- openDb (dir </> "pigeon.db")
         migrate db
         now <- getCurrentTime
-        result <- storeUpload storage db (storeRequest now Nothing "payload")
+        result <- storeUpload storage db (storeRequest Nothing "payload")
         result `shouldSatisfy` isLeft
         listLiveFiles db now `shouldReturn` []
         listDirectory (dir </> "files") `shouldReturn` []
@@ -771,9 +765,8 @@ main = hspec $ do
         storage <- initStorage hooks dir
         db <- openDb (dir </> "pigeon.db")
         migrate db
-        now <- getCurrentTime
-        first <- storeUpload storage db (storeRequest now Nothing "one")
-        second <- storeUpload storage db (storeRequest now Nothing "two")
+        first <- storeUpload storage db (storeRequest Nothing "one")
+        second <- storeUpload storage db (storeRequest Nothing "two")
         first `shouldSatisfy` isRight
         second `shouldSatisfy` isRight
         length <$> listDirectory (dir </> "files") `shouldReturn` 2
@@ -793,7 +786,7 @@ main = hspec $ do
         db <- openDb (dir </> "pigeon.db")
         migrate db
         now <- getCurrentTime
-        result <- storeUpload storage db (storeRequest now Nothing "payload")
+        result <- storeUpload storage db (storeRequest Nothing "payload")
         result `shouldSatisfy` isLeft
         listLiveFiles db now `shouldReturn` []
         length <$> listDirectory (dir </> "files") `shouldReturn` 1
@@ -806,9 +799,8 @@ main = hspec $ do
       storage <- initStorage defaultStorageHooks dir
       db <- openDb (dir </> "pigeon.db")
       migrate db
-      now <- getCurrentTime
       stored <-
-        storeUpload storage db (storeRequest now Nothing "payload")
+        storeUpload storage db (storeRequest Nothing "payload")
           >>= either (fail . show) pure
       let fileId = sfId stored
       deleted <- deleteFileRows db [fileId, FileId "0000000000000000"]
@@ -1114,6 +1106,14 @@ main = hspec $ do
       info <- uploadRaw client "default.txt" "x"
       let lifetime = realToFrac (diffUTCTime (fiExpiresAt info) (fiCreatedAt info)) :: Double
       lifetime `shouldSatisfy` (\d -> abs (d - fromIntegral (scDefaultExpiry cfg)) < 5)
+    it "starts the expiry clock when the upload body finishes" $ withTestServer $ \_ port -> do
+      client <- testClientEnv port
+      startedAt <- getCurrentTime
+      info <- uploadSlow client "slow.txt" 3600 2000000 "x"
+      finishedAt <- getCurrentTime
+      let remaining = realToFrac (diffUTCTime (fiExpiresAt info) finishedAt) :: Double
+      remaining `shouldSatisfy` (\seconds -> abs (seconds - 3600) < 5)
+      diffUTCTime (fiExpiresAt info) startedAt `shouldSatisfy` (> 3601)
     it "returns 400 for an expiry above max_expiry" $ withTestServer $ \_ port -> do
       client <- testClientEnv port
       result <- uploadWithExpiresEither client "x" (8 * 86400)
@@ -1137,11 +1137,11 @@ gzipBytes :: BS.ByteString -> IO BS.ByteString
 gzipBytes bytes = BS.concat <$> runConduitRes (yield bytes .| gzip .| sinkList)
 
 -- | A minimal request for storage-level upload tests.
-storeRequest :: UTCTime -> Maybe BS.ByteString -> BS.ByteString -> StoreRequest
-storeRequest now encoding body =
+storeRequest :: Maybe BS.ByteString -> BS.ByteString -> StoreRequest
+storeRequest encoding body =
   StoreRequest
     { srFilename = "data.bin",
-      srExpiresAt = addUTCTime 3600 now,
+      srLifetime = 3600,
       srPasswordHash = Nothing,
       srContentEncoding = encoding,
       srMaxUploadSize = 0,

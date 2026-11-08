@@ -20,7 +20,7 @@ import Data.Maybe (isJust)
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Text.Encoding (decodeUtf8', encodeUtf8)
-import Data.Time (addUTCTime, getCurrentTime)
+import Data.Time (getCurrentTime)
 import Servant
 
 import Pigeon.API (UploadBody)
@@ -71,7 +71,6 @@ uploadHandler ::
 uploadHandler auth rawFilename rawExpires rawEncoding rawPassword body = do
   requireAuth auth
   cfg <- asks aeConfig
-  now <- liftIO getCurrentTime
 
   lifetime <- case rawExpires of
     Nothing -> pure (scDefaultExpiry cfg)
@@ -95,11 +94,10 @@ uploadHandler auth rawFilename rawExpires rawEncoding rawPassword body = do
     Just "gzip" -> pure (Just "gzip")
     Just _ -> throwError (apiError err415 "unsupported_media_type" "unsupported Content-Encoding")
 
-  let expiresAt = addUTCTime (fromIntegral lifetime) now
-      request =
+  let request =
         StoreRequest
           { srFilename = filename,
-            srExpiresAt = expiresAt,
+            srLifetime = lifetime,
             srPasswordHash = passwordHash,
             srContentEncoding = fmap encodeUtf8 encoding,
             srMaxUploadSize = scMaxUploadSize cfg,

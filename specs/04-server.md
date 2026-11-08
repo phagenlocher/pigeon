@@ -229,13 +229,14 @@ Algorithm:
 4. **SRV-074** Decode `X-Pigeon-Password` if present to bytes, validate base64url and 1–1024 byte length, and decode as UTF-8 without normalization. Invalid UTF-8 is `400 invalid_request`.
 5. **SRV-075** Hash the password with `Pigeon.Password.hashPassword` (PBKDF2-HMAC-SHA512 from the `password` package) using `password_hash_iterations`. This happens before the body is stored so a hashing failure cannot leave a blob.
 6. **SRV-076** Validate `Content-Encoding`: absent/`identity`/`gzip`; otherwise `415`.
-7. **SRV-077** Call `storeUpload` with the stream, metadata, expiry, and encoded password hash.
+7. **SRV-077** Call `storeUpload` with the stream, metadata, lifetime, and encoded password hash. The lifetime is resolved before streaming, but the expiry timestamp is computed only after the body has been stored.
 8. **SRV-078** Map `StorageError`:
    - bad gzip → `400 invalid_request`
    - size limit → `413 payload_too_large`
    - IO/database failure → `500 internal_error`
 9. **SRV-079** Build `FileInfo` with `url = publicUrl <> "/f/" <> id`.
 10. **SRV-080** Return `201` with `Cache-Control: no-store`.
+11. **SRV-081** `storeUpload` records `created_at` when storage completes and sets `expires_at = created_at + lifetime` (STORE-100, NET-021).
 
 Password hashing cost happens only when a password is supplied. An upload without a password does not run PBKDF2.
 

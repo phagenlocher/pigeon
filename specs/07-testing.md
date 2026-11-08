@@ -206,10 +206,11 @@ Failures are injected through `StorageHooks` so the tests do not depend on a par
 
 ### 5.2 Upload and list
 
-- **TEST-170** Upload without `expires_in` returns `expiresAt` approximately `now + default_expiry`.
+- **TEST-170** Upload without `expires_in` returns `expiresAt` approximately `createdAt + default_expiry`.
 - **TEST-171** Upload with `expires_in = 604800` returns the expected expiry.
 - **TEST-172** `expires_in = 0`, negative, non-integer, and above `max_expiry` → `400`.
 - **TEST-173** `filename` defaults to `file` when omitted.
+- **TEST-174** A slow upload starts its expiry clock when the body finishes, not when the request starts; `expiresAt - createdAt` equals the requested lifetime.
 - **TEST-175** A Unicode filename round-trips through upload and list.
 - **TEST-176** List returns newest first and excludes expired files.
 - **TEST-177** List is empty for a fresh server.

@@ -137,7 +137,7 @@ sha512:25000:YWJjZGVmZ2hpamtsbW5vcA==:JRElYYrOMe9OIV4LDxaLTgO9ho8fFBVofXoQcdngi7
 ```haskell
 data StoreRequest = StoreRequest
   { srFilename        :: Text
-  , srExpiresAt       :: UTCTime
+  , srLifetime        :: Int64           -- seconds, measured from completion
   , srPasswordHash    :: Maybe Text       -- encoded PBKDF2 hash text, or Nothing
   , srContentEncoding :: Maybe ByteString -- Nothing / "identity" / "gzip"
   , srMaxUploadSize   :: Int64           -- 0 = unlimited
@@ -169,7 +169,7 @@ data StoreRequest = StoreRequest
 6. **STORE-065** `fsync` the temp file with `fileSynchronise`. Failure aborts the upload, removes the temp file, and commits no metadata row. The descriptor is closed on both success and failure; a close error must never mask the synchronization error.
 7. **STORE-066** Atomically rename the temp file to `files/<id>.gz`.
 8. **STORE-067** `fsync` the `files/` directory before inserting metadata. If opening or synchronizing the directory fails with any ordinary I/O error, remove the renamed blob, do not insert, and return a storage error. Only an error that explicitly means the platform does not support directory fsync (`EINVAL`/`EOPNOTSUPP`, surfaced as `InvalidArgument`/`UnsupportedOperation`) takes the documented exception path: log one warning per process and continue with the documented reduced crash durability. Do not treat every `IOException` as unsupported. If the post-rename cleanup itself fails, log the orphan blob ID for later reconciliation and still do not insert a row.
-9. **STORE-068** Insert the metadata row in a `BEGIN IMMEDIATE` transaction and commit.
+9. **STORE-068** Once the body has been stored, record `created_at` from the server clock, compute `expires_at = created_at + srLifetime`, and insert the metadata row in a `BEGIN IMMEDIATE` transaction and commit.
 10. **STORE-069** Return the `StoredFile` with `size_original`, `size_stored`, and the final path.
 
 If any step before the rename fails, remove the temp file. If the insert fails after the rename, remove the final blob and return an error. If the process crashes between rename and insert, the orphan sweeper removes the blob after the grace period.
@@ -220,7 +220,7 @@ The sweeper follows the same order: commit row deletion first, then unlink blobs
 
 ## 10. Expiry and sweeper
 
-- **STORE-100** `expires_at` is computed by the server as `now + lifetime`, where `lifetime` is `expires_in` if supplied or `default_expiry` otherwise.
+- **STORE-100** `created_at` is the server time when the upload body has been fully received and the blob durably stored. `expires_at` is then computed as `created_at + lifetime`, where `lifetime` is `expires_in` if supplied or `default_expiry` otherwise. The expiry clock never starts before the upload completes.
 - **STORE-101** All comparisons use the server's UTC clock.
 - **STORE-102** The sweeper runs every `sweep_interval` (default `60s`, minimum `1s`).
 - **STORE-103** Each sweep:

@@ -121,7 +121,7 @@ Body: raw octet stream, optionally gzip-compressed.
 Semantics:
 
 - **NET-020** Authentication is checked before the request body is consumed. An unauthenticated request must not write a temp file.
-- **NET-021** If `expires_in` is absent, the server computes `expires_at = now + default_expiry`.
+- **NET-021** After the upload body has been fully received and stored, the server records `created_at` and computes `expires_at = created_at + lifetime`, where `lifetime` is `expires_in` or `default_expiry`. The clock starts at completion, not when the request began.
 - **NET-022** If `expires_in` is present, it MUST be an integer in `1 .. max_expiry_seconds`; otherwise `400 invalid_request`.
 - **NET-023** The server always stores the blob gzip-compressed:
   - `Content-Encoding: gzip`: received bytes are written to a temp file as-is while the same chunks are streamed through `ungzip`, in one pass, to validate the stream and compute the original size.

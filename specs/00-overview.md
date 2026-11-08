@@ -79,7 +79,7 @@ There are no user accounts, no per-user ownership, and no roles. Anyone with the
 1. Uploader runs `pigeon-client upload report.pdf`.
 2. Client reads the file as a stream, optionally gzip-compresses it, and sends it to `POST /api/v1/files`.
 3. Client omits `expires_in`.
-4. Server applies `--default-expiry` (default `7d`), streams the body to a temp file, stores a gzip blob, and inserts metadata.
+4. Server applies `--default-expiry` (default `7d`), streams the body to a temp file, stores a gzip blob, then starts the lifetime when storage completes and inserts metadata.
 5. Server returns `201` with `FileInfo`, including the absolute public URL and the computed `expiresAt`.
 6. Client prints the URL.
 

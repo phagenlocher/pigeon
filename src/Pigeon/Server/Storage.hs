@@ -42,7 +42,7 @@ import Data.List (isSuffixOf)
 import Data.Streaming.Zlib (ZlibException)
 import Data.Text (Text)
 import Data.Text qualified as T
-import Data.Time (UTCTime, addUTCTime, getCurrentTime)
+import Data.Time (addUTCTime, getCurrentTime)
 import Database.SQLite.Simple (SQLError)
 import GHC.IO.Exception (IOErrorType (..))
 import System.Directory (
@@ -141,7 +141,7 @@ data Storage = Storage
 -- | Everything needed to store one upload.
 data StoreRequest = StoreRequest
   { srFilename :: Text,
-    srExpiresAt :: UTCTime,
+    srLifetime :: Int64,
     srPasswordHash :: Maybe Text,
     srContentEncoding :: Maybe ByteString,
     srMaxUploadSize :: Int64,
@@ -214,17 +214,10 @@ removeIfExists path = removeFile path `catch` \(_ :: IOException) -> pure ()
 
 storeUpload :: Storage -> Db -> StoreRequest -> IO (Either StorageError StoredFile)
 storeUpload storage db request = do
-  now <- getCurrentTime
-  let createdAt = clampCreatedAt now (srExpiresAt request)
-  result <- try (doStore storage db request createdAt) :: IO (Either SomeException StoredFile)
+  result <- try (doStore storage db request) :: IO (Either SomeException StoredFile)
   pure $ case result of
     Right stored -> Right stored
     Left err -> Left (classify err)
-
-clampCreatedAt :: UTCTime -> UTCTime -> UTCTime
-clampCreatedAt now expiresAt =
-  let latest = addUTCTime (-1) expiresAt
-   in if now >= expiresAt then latest else now
 
 classify :: SomeException -> StorageError
 classify err
@@ -242,8 +235,8 @@ The ordering is deliberate: a temp-file fsync failure aborts before the rename
 (STORE-065), and after the rename only a recognised unsupported platform may
 continue past the directory sync.
 -}
-doStore :: Storage -> Db -> StoreRequest -> UTCTime -> IO StoredFile
-doStore storage db StoreRequest{..} createdAt = do
+doStore :: Storage -> Db -> StoreRequest -> IO StoredFile
+doStore storage db StoreRequest{..} = do
   fileId <- pickFreshId db
   suffix <- randomSuffix
   let temp = tempPath storage fileId suffix
@@ -273,7 +266,9 @@ doStore storage db StoreRequest{..} createdAt = do
         DirSyncSucceeded -> pure ()
         DirSyncUnsupported -> warnUnsupportedDirSync storage
 
-      let stored :: StoredFile
+      finishedAt <- getCurrentTime
+      let expiresAt = addUTCTime (fromIntegral srLifetime) finishedAt
+          stored :: StoredFile
           stored =
             StoredFile
               { sfId = fileId,
@@ -281,8 +276,8 @@ doStore storage db StoreRequest{..} createdAt = do
                 sfSize = sizeOriginal,
                 sfStoredSize = sizeStored,
                 sfPasswordHash = srPasswordHash,
-                sfCreatedAt = createdAt,
-                sfExpiresAt = srExpiresAt
+                sfCreatedAt = finishedAt,
+                sfExpiresAt = expiresAt
               }
 
       insertFile db stored

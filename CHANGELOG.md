@@ -1,5 +1,12 @@
 # Revision history for pigeon
 
+## Unreleased
+
+* Upload expiry now starts when the upload body has finished storing, not when
+  the request starts. `created_at` and `expires_at` are both anchored at
+  completion, so a slow upload keeps its full advertised lifetime (NET-021,
+  STORE-100, SRV-081).
+
 ## 0.1.1.0 -- 2026-11-07
 
 * `pigeon-client` reads defaults from a TOML configuration file. Use
