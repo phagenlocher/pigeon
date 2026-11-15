@@ -1,6 +1,6 @@
 # Revision history for pigeon
 
-## Unreleased
+## 0.1.2.0 -- 2026-11-15
 
 * Gzip uploads are now validated as exactly one complete gzip member. A stream
   that ends before the member trailer, or that has bytes after the member
