@@ -1,11 +1,5 @@
 # Revision history for pigeon
 
-## Unreleased
-
-* The release image workflow no longer runs a separate "Free disk space" step
-  before building; the runners have enough space for the toolchain image and
-  the `-O2` dependency build without pruning caches.
-
 ## 0.1.2.0 -- 2026-11-15
 
 * Gzip uploads are now validated as exactly one complete gzip member. A stream

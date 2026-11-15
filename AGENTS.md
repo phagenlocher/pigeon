@@ -150,7 +150,8 @@ The server never buffers a whole file. Uploads and downloads use `ConduitT`/`Sou
 3. Implement the smallest change that satisfies the requirement.
 4. Add or update tests that name the requirement.
 5. Update the spec if behavior or rationale changed.
-6. Update `CHANGELOG.md` for user-visible changes.
+6. Update `CHANGELOG.md` for user-visible behavior changes; never for
+   documentation, CI, build, or test-only changes.
 7. Run `cabal build all`, `cabal test all`, `fourmolu --mode check`, and `hlint`.
 8. Confirm no secrets or file contents appear in logs or test output.
 

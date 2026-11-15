@@ -82,5 +82,12 @@ If behavior changed, update the relevant spec in `specs/` and `CHANGELOG.md` in
 the same commit. New entries go under the `## Unreleased` section at the top of
 `CHANGELOG.md`; do not add them to an already released version. Create that
 section if it is missing, and only move entries into a version section when
-preparing a release. Never commit secrets, tokens, passwords, or real file
-contents, including in test fixtures and logs.
+preparing a release.
+
+`CHANGELOG.md` describes only user-visible behavior, such as new capabilities,
+bug fixes, and interface changes. Do not add entries for documentation, CI,
+workflow, build, or test-only changes: a `docs`, `ci`, `build`, or `test` commit
+never changes the changelog.
+
+Never commit secrets, tokens, passwords, or real file contents, including in
+test fixtures and logs.
