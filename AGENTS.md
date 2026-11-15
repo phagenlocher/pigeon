@@ -25,6 +25,8 @@ Requirements have stable IDs such as `NET-004`, `STORE-011`, `SRV-003`. Tests an
 
 If implementation and specification disagree, **the specification wins** until it is deliberately changed. A behavior change is not complete until the relevant spec is updated in the same change.
 
+[`CONTRIBUTING.md`](CONTRIBUTING.md) governs the repository workflow: commit message format, changelog entries, and the pre-commit checks. Read it before your first change and follow it for every commit; this file describes the code, `CONTRIBUTING.md` describes how changes land.
+
 ## Commands
 
 ```bash
