@@ -155,8 +155,8 @@ data StoreRequest = StoreRequest
    - Stream the request body into the temp file exactly as received.
    - Count received (stored) bytes.
    - If `max_upload_size > 0` and received bytes exceed it, abort with `payload_too_large`.
-   - In the same pass, feed each received chunk to `ungzip` and count the decompressed bytes.
-   - If `ungzip` throws, abort with `invalid_request` (bad gzip). A corrupt stream is detected as soon as the failing chunk arrives.
+   - In the same pass, feed each received chunk to a gzip inflater and count the decompressed bytes.
+   - The body must be exactly one complete gzip member. If the inflater reports an error, the body ends before the member reaches its trailer, or any bytes follow the member, abort with `invalid_request` (bad gzip). A corrupt stream is detected as soon as the failing chunk arrives; a truncated stream is detected when the body ends.
    - If `max_upload_size > 0` and the decompressed byte count exceeds it, abort with `payload_too_large`.
    - The decompressed count is `size_original`.
 4. **STORE-063** If `srContentEncoding` is absent or `identity`:
@@ -178,7 +178,7 @@ If any step before the rename fails, remove the temp file. If the insert fails a
 
 The client sends compressed bytes. The server must know the original size for listing and for the upload-size policy. The gzip trailer's `ISIZE` field is only 32-bit and is not reliable for files larger than 4 GiB, and it does not prove that the stream is intact. A single streaming decompression pass is therefore still required.
 
-That pass runs while the bytes are written, not after them: each received chunk is stored exactly as received and, in the same iteration, fed to `ungzip` and counted. This keeps memory constant, validates the stream and computes `size_original` without a second read of the temp file, overlaps decompression with the network transfer, and rejects a corrupt stream early. The tradeoff is that the decompression cost sits on the receive path instead of after it; the total CPU work is unchanged.
+That pass runs while the bytes are written, not after them: each received chunk is stored exactly as received and, in the same iteration, fed to the inflater and counted. This keeps memory constant, validates the stream and computes `size_original` without a second read of the temp file, overlaps decompression with the network transfer, and rejects a corrupt stream early. The pass also checks that the inflater reached the end of the gzip member and that no bytes follow it: a truncated member would otherwise be stored successfully and later downloaded as a silently short file, and a second member would not be counted in `size_original`. The tradeoff is that the decompression cost sits on the receive path instead of after it; the total CPU work is unchanged.
 
 For identity uploads the server compresses at rest. `parallelGzipConduit` splits the input into 1 MiB blocks and compresses them concurrently with raw deflate streams, each ending in `Z_FULL_FLUSH`. A full flush resets the dictionary and ends on a byte boundary, so the segments can be concatenated into one deflate stream. The conduit writes one gzip header, the segments in input order, a final empty deflate block, and one trailer whose CRC-32 and ISIZE cover the whole uncompressed input (CRC-32 comes from zlib through a small FFI binding). The result is a normal **single-member** gzip stream: decoders that stop after the first member, including zlib-based HTTP clients, still read the whole file. The 32 KiB window is reset at each block boundary, so the compression-ratio loss is negligible at 1 MiB blocks.
 
@@ -200,7 +200,7 @@ For identity uploads the server compresses at rest. `parallelGzipConduit` splits
 - **STORE-082** The download handler releases the database lock before calling `openBlob`.
 - **STORE-083** A missing blob for a live row returns `404` and logs an inconsistency. The row is removed by reconciliation later.
 - **STORE-084** Gzip passthrough streams the file bytes unchanged.
-- **STORE-085** Identity download runs the file through `ungzip` before sending.
+- **STORE-085** Identity download runs the file through the validating inflater before sending. A stored blob that is truncated or has trailing data fails the transfer rather than being served silently short.
 - **STORE-086** No download path may call `BS.readFile` or otherwise materialize the blob.
 
 ## 9. Deletion

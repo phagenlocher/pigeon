@@ -80,6 +80,7 @@ import Pigeon.Server.PathSafety (
   ensurePrivateSubdirectory,
  )
 import Pigeon.Streaming (
+  BadGzip,
   UploadTooLarge (..),
   countBytesLimited,
   parallelGzipConduit,
@@ -107,7 +108,7 @@ of depending on a particular filesystem (TEST-154, TEST-155, TEST-156).
 data StorageHooks = StorageHooks
   { -- | fsync a file and close it; failures propagate (STORE-065).
     shSyncFile :: FilePath -> IO (),
-    -- | fsync a directory; only unsupported platforms return a value.
+    -- | fsync a directory
     shSyncDir :: FilePath -> IO DirSyncResult,
     -- | remove a blob during post-rename cleanup.
     shRemoveBlob :: FilePath -> IO (),
@@ -223,6 +224,7 @@ classify :: SomeException -> StorageError
 classify err
   | Just (storageError :: StorageError) <- fromException err = storageError
   | Just (_ :: UploadTooLarge) <- fromException err = StorageTooLarge
+  | Just (_ :: BadGzip) <- fromException err = StorageBadGzip
   | Just (_ :: ZlibException) <- fromException err = StorageBadGzip
   | Just (_ :: IOException) <- fromException err = StorageIo "filesystem error"
   | Just (_ :: SQLError) <- fromException err = StorageIo "database error"
@@ -262,9 +264,7 @@ doStore storage db StoreRequest{..} = do
       renameFile temp final
 
       dirOutcome <- shSyncDir hooks (stFilesDir storage)
-      case dirOutcome of
-        DirSyncSucceeded -> pure ()
-        DirSyncUnsupported -> warnUnsupportedDirSync storage
+      when (dirOutcome == DirSyncUnsupported) $ warnUnsupportedDirSync storage
 
       finishedAt <- getCurrentTime
       let expiresAt = addUTCTime (fromIntegral srLifetime) finishedAt
@@ -359,7 +359,9 @@ the decompressed size in the same pass (STORE-062).
 Each received chunk is written to the temp file and fed to the inflater before
 the next chunk is read, so the stored bytes stay exactly as received, memory
 stays constant, and a corrupt stream is rejected as soon as it is detected
-rather than after the whole body has been written.
+rather than after the whole body has been written. The body must be exactly
+one complete gzip member: a member that never reaches its trailer and any
+bytes after it are rejected instead of being stored.
 -}
 writeGzipBody :: UploadBody -> FilePath -> Int64 -> IORef Int64 -> IORef Int64 -> IO ()
 writeGzipBody body temp limit storedRef originalRef =
@@ -424,7 +426,7 @@ synchroniseDirectoryOutcome path = do
   closeResult <- try (closeFd fd) :: IO (Either IOException ())
   case syncResult of
     Left err
-      | isUnsupportedDirSync err -> pure DirSyncUnsupported
+      | isUnsupportedDirSyncException err -> pure DirSyncUnsupported
       | otherwise -> throwIO err
     Right () -> either throwIO (const (pure DirSyncSucceeded)) closeResult
 
@@ -433,8 +435,8 @@ directory fsync" may take the warn-and-continue path (STORE-067).
 'IOErrorType' comes from @GHC.IO.Exception@ because its constructors are
 exported only from that internal module.
 -}
-isUnsupportedDirSync :: IOException -> Bool
-isUnsupportedDirSync err =
+isUnsupportedDirSyncException :: IOException -> Bool
+isUnsupportedDirSyncException err =
   ioeGetErrorType err `elem` [InvalidArgument, UnsupportedOperation]
 
 {- | Synchronise and close a descriptor. A close error is reported only when

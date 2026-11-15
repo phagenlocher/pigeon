@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+* Gzip uploads are now validated as exactly one complete gzip member. A stream
+  that ends before the member trailer, or that has bytes after the member
+  (including a second concatenated member), is rejected with `400
+  invalid_request` and leaves no row, blob, or temp file. Previously a
+  truncated upload could be published and later downloaded as a silently
+  short or empty file, and a second member bypassed `--max-upload-size` and
+  the reported `size` (NET-023, NET-024, STORE-062, SEC-113).
+
 * Upload expiry now starts when the upload body has finished storing, not when
   the request starts. `created_at` and `expires_at` are both anchored at
   completion, so a slow upload keeps its full advertised lifetime (NET-021,

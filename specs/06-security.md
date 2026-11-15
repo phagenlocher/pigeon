@@ -219,7 +219,7 @@ X-Robots-Tag: noindex, nofollow
 - **SEC-110** Upload bodies are streamed; the server never buffers a whole file.
 - **SEC-111** `--max-upload-size` can cap both stored and decompressed bytes. `0` means unlimited and is a deliberate risk.
 - **SEC-112** Gzip decompression is streamed and aborts once the configured limit is exceeded.
-- **SEC-113** Incoming gzip is validated; a corrupt stream is rejected and its temp file removed.
+- **SEC-113** Incoming gzip is validated as exactly one complete member; a corrupt stream, a truncated stream, or bytes after the member are rejected and the temp file is removed.
 - **SEC-114** The password form body is limited to 8192 bytes.
 - **SEC-115** The password KDF is CPU-expensive by design; a public deployment should rate-limit password attempts at the proxy.
 - **SEC-116** SQLite writes are serialized through one connection. A malicious uploader cannot create unbounded concurrent write transactions, but a valid token holder can still fill the disk.

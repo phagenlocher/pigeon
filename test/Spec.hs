@@ -14,7 +14,7 @@ import Data.ByteString qualified as BS
 import Data.ByteString.Char8 qualified as B8
 import Data.ByteString.Lazy qualified as LBS
 import Data.Conduit (runConduitRes, yield, (.|))
-import Data.Conduit.Combinators (sinkList)
+import Data.Conduit.Combinators (sinkList, sinkNull)
 import Data.Conduit.Zlib (gzip, ungzip)
 import Data.Either (fromLeft, isLeft, isRight)
 import Data.IORef (IORef, atomicModifyIORef', newIORef, readIORef)
@@ -542,6 +542,32 @@ main = hspec $ do
         BS.concat <$> runConduitRes (yield compressed .| ungzip .| sinkList)
       decompressed `shouldBe` payload
 
+  describe "gzip validation" $ do
+    it "decodes exactly one complete member" $ do
+      compressed <- gzipBytes "payload"
+      decoded <-
+        BS.concat <$> runConduitRes (yield compressed .| ungzipConduit .| sinkList)
+      decoded `shouldBe` "payload"
+    it "rejects a member that ends before its trailer" $ do
+      compressed <- gzipBytes (B8.replicate 1024 'a')
+      let truncated = BS.take (BS.length compressed - 8) compressed
+      (runConduitRes (yield truncated .| ungzipConduit .| sinkNull) :: IO ())
+        `shouldThrow` (== GzipIncomplete)
+    it "rejects a member truncated mid-stream" $ do
+      compressed <- gzipBytes (B8.replicate 4096 'a')
+      let truncated = BS.take 20 compressed
+      (runConduitRes (yield truncated .| ungzipConduit .| sinkNull) :: IO ())
+        `shouldThrow` (== GzipIncomplete)
+    it "rejects bytes after the member" $ do
+      compressed <- gzipBytes "payload"
+      (runConduitRes (yield (compressed <> "junk") .| ungzipConduit .| sinkNull) :: IO ())
+        `shouldThrow` (== GzipTrailingData)
+    it "rejects a second gzip member" $ do
+      first <- gzipBytes "one"
+      second <- gzipBytes "two"
+      (runConduitRes (yield (first <> second) .| ungzipConduit .| sinkNull) :: IO ())
+        `shouldThrow` (== GzipTrailingData)
+
   describe "JSON" $ do
     it "serializes FileInfo with the documented field names" $ do
       let now = epochToUtc 1761955200
@@ -611,19 +637,69 @@ main = hspec $ do
       blob <- BS.readFile (blobPath storage (sfId stored))
       blob `shouldBe` encoded
       closeDb db
-    it "stores every received gzip byte even after the stream ends" $ withTempDataDir $ \dir -> do
+    it "rejects gzip followed by trailing bytes" $ withTempDataDir $ \dir -> do
       storage <- initStorage defaultStorageHooks dir
       db <- openDb (dir </> "pigeon.db")
       migrate db
-      let payload = "payload"
-      compressed <- gzipBytes payload
-      let received = compressed <> "trailing bytes"
+      now <- getCurrentTime
+      compressed <- gzipBytes "payload"
+      result <-
+        storeUpload storage db (storeRequest (Just "gzip") (compressed <> "trailing bytes"))
+      result `shouldBe` Left StorageBadGzip
+      listLiveFiles db now `shouldReturn` []
+      listBlobIds storage `shouldReturn` []
+      listTempFiles storage `shouldReturn` []
+      closeDb db
+    it "rejects a gzip upload truncated inside the trailer" $ withTempDataDir $ \dir -> do
+      storage <- initStorage defaultStorageHooks dir
+      db <- openDb (dir </> "pigeon.db")
+      migrate db
+      now <- getCurrentTime
+      compressed <- gzipBytes (B8.replicate 4096 'a')
+      let truncated = BS.take (BS.length compressed - 8) compressed
+      result <- storeUpload storage db (storeRequest (Just "gzip") truncated)
+      result `shouldBe` Left StorageBadGzip
+      listLiveFiles db now `shouldReturn` []
+      listBlobIds storage `shouldReturn` []
+      listTempFiles storage `shouldReturn` []
+      closeDb db
+    it "rejects a gzip upload truncated mid-stream" $ withTempDataDir $ \dir -> do
+      storage <- initStorage defaultStorageHooks dir
+      db <- openDb (dir </> "pigeon.db")
+      migrate db
+      now <- getCurrentTime
+      compressed <- gzipBytes (B8.replicate 4096 'a')
+      let truncated = BS.take 20 compressed
+      result <- storeUpload storage db (storeRequest (Just "gzip") truncated)
+      result `shouldBe` Left StorageBadGzip
+      listLiveFiles db now `shouldReturn` []
+      listBlobIds storage `shouldReturn` []
+      listTempFiles storage `shouldReturn` []
+      closeDb db
+    it "rejects concatenated gzip members" $ withTempDataDir $ \dir -> do
+      storage <- initStorage defaultStorageHooks dir
+      db <- openDb (dir </> "pigeon.db")
+      migrate db
+      now <- getCurrentTime
+      first <- gzipBytes "first"
+      second <- gzipBytes (B8.replicate 4096 'b')
+      result <- storeUpload storage db (storeRequest (Just "gzip") (first <> second))
+      result `shouldBe` Left StorageBadGzip
+      listLiveFiles db now `shouldReturn` []
+      listBlobIds storage `shouldReturn` []
+      listTempFiles storage `shouldReturn` []
+      closeDb db
+    it "accepts a complete gzip member that decodes to zero bytes" $ withTempDataDir $ \dir -> do
+      storage <- initStorage defaultStorageHooks dir
+      db <- openDb (dir </> "pigeon.db")
+      migrate db
+      compressed <- gzipBytes BS.empty
       stored <-
-        storeUpload storage db (storeRequest (Just "gzip") received)
+        storeUpload storage db (storeRequest (Just "gzip") compressed)
           >>= either (fail . show) pure
-      sfSize stored `shouldBe` fromIntegral (BS.length payload)
+      sfSize stored `shouldBe` 0
       blob <- BS.readFile (blobPath storage (sfId stored))
-      blob `shouldBe` received
+      blob `shouldBe` compressed
       closeDb db
     it "stores a multi-block identity upload as one gzip stream" $ withTempDataDir $ \dir -> do
       storage <- initStorage defaultStorageHooks dir
@@ -1014,6 +1090,38 @@ main = hspec $ do
             ("Content-Type", "application/octet-stream")
           ]
           corrupt
+      statusCode (statusOf response) `shouldBe` 400
+      listFiles client `shouldReturn` []
+    it "rejects a truncated gzip upload over HTTP" $ withTestServer $ \_ port -> do
+      client <- testClientEnv port
+      compressed <- gzipBytes (B8.replicate 4096 'a')
+      let truncated = BS.take (BS.length compressed - 8) compressed
+      response <-
+        requestWith
+          port
+          "/api/v1/files?filename=short.gz"
+          "POST"
+          [ ("Authorization", encodeUtf8 authHeader),
+            ("Content-Encoding", "gzip"),
+            ("Content-Type", "application/octet-stream")
+          ]
+          truncated
+      statusCode (statusOf response) `shouldBe` 400
+      listFiles client `shouldReturn` []
+    it "rejects concatenated gzip members over HTTP" $ withTestServer $ \_ port -> do
+      client <- testClientEnv port
+      first <- gzipBytes "first"
+      second <- gzipBytes (B8.replicate 4096 'b')
+      response <-
+        requestWith
+          port
+          "/api/v1/files?filename=two.gz"
+          "POST"
+          [ ("Authorization", encodeUtf8 authHeader),
+            ("Content-Encoding", "gzip"),
+            ("Content-Type", "application/octet-stream")
+          ]
+          (first <> second)
       statusCode (statusOf response) `shouldBe` 400
       listFiles client `shouldReturn` []
     it "round-trips a 32 MiB upload through multiple blocks" $ withTestServer $ \_ port -> do

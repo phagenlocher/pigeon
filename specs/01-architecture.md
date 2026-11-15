@@ -119,6 +119,8 @@ sourceHandleChunked :: Int -> Handle -> ConduitT i ByteString (ResourceT IO) ()
 gzipConduit :: ConduitT ByteString ByteString (ResourceT IO) ()
 parallelGzipConduit :: ConduitT ByteString ByteString (ResourceT IO) ()
 ungzipConduit :: ConduitT ByteString ByteString (ResourceT IO) ()
+-- Validating inflater: decodes exactly one complete gzip member and throws
+-- BadGzip if the member is truncated or any bytes follow it.
 
 -- parallelGzipConduit compresses 1 MiB blocks concurrently and stitches the
 -- raw deflate segments into one standard gzip stream (one header and trailer).
@@ -132,7 +134,12 @@ data AcceptEncoding = AcceptGzip | AcceptIdentity | NotAcceptable
 parseAcceptEncoding :: ByteString -> AcceptEncoding
 ```
 
-Use `Data.Conduit.Zlib` (`gzip`, `ungzip`) from `conduit-extra`. Do not use lazy `Codec.Compression.GZip` on file content.
+Use `Data.Conduit.Zlib.gzip` from `conduit-extra` for compression. Use
+`Data.Streaming.Zlib` (`initInflate`, `feedInflate`, `finishInflate`,
+`getUnusedInflate`, `isCompleteInflate`) for decompression:
+`Data.Conduit.Zlib.ungzip` stops at the first member and silently accepts a
+truncated stream, so it cannot be used where the input must be validated. Do
+not use lazy `Codec.Compression.GZip` on file content.
 
 `parallelGzipConduit` uses raw deflate streams from `Data.Streaming.Zlib`
 (`initDeflate`, `feedDeflate`, `fullFlushDeflate`, `finishDeflate`) and zlib's

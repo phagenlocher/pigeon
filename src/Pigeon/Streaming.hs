@@ -16,6 +16,7 @@ module Pigeon.Streaming (
   countBytes,
   countBytesLimited,
   UploadTooLarge (..),
+  BadGzip (..),
   AcceptEncoding (..),
   parseAcceptEncoding,
 )
@@ -23,9 +24,9 @@ where
 
 import Control.Concurrent (getNumCapabilities)
 import Control.Concurrent.Async (mapConcurrently)
-import Control.Monad (foldM, when)
+import Control.Monad (foldM, unless, when)
 import Control.Monad.Catch (Exception, MonadThrow, throwM)
-import Control.Monad.IO.Class (liftIO)
+import Control.Monad.IO.Class (MonadIO, liftIO)
 import Control.Monad.Primitive (PrimMonad)
 import Control.Monad.Trans.Resource (ResourceT)
 import Data.Bits (shiftR)
@@ -36,19 +37,25 @@ import Data.ByteString.Char8 qualified as B8
 import Data.ByteString.Unsafe (unsafeUseAsCStringLen)
 import Data.Conduit
 import Data.Conduit.Combinators (chunksOfE)
-import Data.Conduit.Zlib (gzip, ungzip)
+import Data.Conduit.Zlib (gzip)
 import Data.IORef
 import Data.Int (Int64)
 import Data.Maybe (fromMaybe, mapMaybe)
 import Data.Streaming.Zlib (
   Deflate,
+  Inflate,
   Popper,
   PopperRes (..),
   WindowBits (..),
   feedDeflate,
+  feedInflate,
   finishDeflate,
+  finishInflate,
   fullFlushDeflate,
+  getUnusedInflate,
   initDeflate,
+  initInflate,
+  isCompleteInflate,
  )
 import Data.Word (Word32, Word8)
 import Foreign.C.Types (CUInt (..), CULong (..))
@@ -222,9 +229,75 @@ finishEmptyBlock = do
 newDeflater :: IO Deflate
 newDeflater = initDeflate 6 (WindowBits (-15))
 
--- | Streaming gzip decompression of one member.
-ungzipConduit :: (MonadThrow m, PrimMonad m) => ConduitT ByteString ByteString m ()
-ungzipConduit = ungzip
+{- | Why a gzip body is rejected even though part of it decodes.
+
+We accept exactly one complete gzip member. A stream that ends before the
+member's trailer would otherwise be stored and later downloaded as a silently
+short file, and bytes after the member would not be counted towards the
+original size (NET-023, NET-024, SEC-113).
+-}
+data BadGzip
+  = GzipIncomplete
+  | GzipTrailingData
+  deriving (Eq, Show)
+
+instance Exception BadGzip
+
+{- | Streaming gzip decompression of exactly one complete member.
+
+Unlike @Data.Conduit.Zlib.ungzip@, which stops at the end of the first member
+and silently accepts a truncated stream, this rejects both a member that never
+reaches its trailer and any bytes that follow the member.
+-}
+ungzipConduit :: (MonadIO m, MonadThrow m) => ConduitT ByteString ByteString m ()
+ungzipConduit = do
+  inflater <- liftIO (initInflate (WindowBits 31))
+  feedUntilComplete inflater
+  complete <- liftIO (isCompleteInflate inflater)
+  unless complete $ throwM GzipIncomplete
+  finalChunk <- liftIO (finishInflate inflater)
+  unless (BS.null finalChunk) $ yield finalChunk
+  unused <- liftIO (getUnusedInflate inflater)
+  unless (BS.null unused) $ throwM GzipTrailingData
+  rejectMoreInput
+ where
+  feedUntilComplete ::
+    (MonadIO m, MonadThrow m) =>
+    Inflate ->
+    ConduitT ByteString ByteString m ()
+  feedUntilComplete inflater = do
+    next <- await
+    case next of
+      Nothing -> pure ()
+      Just chunk
+        | BS.null chunk -> feedUntilComplete inflater
+        | otherwise -> do
+            popper <- liftIO (feedInflate inflater chunk)
+            drainInflate popper
+            complete <- liftIO (isCompleteInflate inflater)
+            unless complete (feedUntilComplete inflater)
+
+  drainInflate ::
+    (MonadIO m, MonadThrow m) =>
+    Popper ->
+    ConduitT ByteString ByteString m ()
+  drainInflate popper = do
+    next <- liftIO popper
+    case next of
+      PRDone -> pure ()
+      PRNext chunk -> yield chunk >> drainInflate popper
+      PRError err -> throwM err
+
+  rejectMoreInput ::
+    (MonadThrow m) =>
+    ConduitT ByteString ByteString m ()
+  rejectMoreInput = do
+    next <- await
+    case next of
+      Nothing -> pure ()
+      Just chunk
+        | BS.null chunk -> rejectMoreInput
+        | otherwise -> throwM GzipTrailingData
 
 -- | Pass bytes through unchanged.
 passThrough :: (Monad m) => ConduitT ByteString ByteString m ()

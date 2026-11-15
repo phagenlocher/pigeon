@@ -162,6 +162,8 @@ Tests must assert behavior, not implementation details. Do not weaken a test to 
 - **TEST-126** A gzip upload that decompresses beyond `max_upload_size` returns `413` and leaves no row/final blob.
 - **TEST-127** An identity upload beyond `max_upload_size` returns `413` while streaming, not after buffering.
 - **TEST-128** A zero-byte file stores a valid gzip stream and downloads as zero bytes with identity encoding.
+- **TEST-129** A gzip upload whose member never reaches its trailer (truncated at any point) returns `400` and leaves no row, blob, or temp file.
+- **TEST-130** A gzip upload with trailing bytes after the member, or with a second concatenated member, returns `400` and leaves no row, blob, or temp file.
 
 ### 4.3 Deletion and expiry
 

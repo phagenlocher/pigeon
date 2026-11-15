@@ -124,10 +124,10 @@ Semantics:
 - **NET-021** After the upload body has been fully received and stored, the server records `created_at` and computes `expires_at = created_at + lifetime`, where `lifetime` is `expires_in` or `default_expiry`. The clock starts at completion, not when the request began.
 - **NET-022** If `expires_in` is present, it MUST be an integer in `1 .. max_expiry_seconds`; otherwise `400 invalid_request`.
 - **NET-023** The server always stores the blob gzip-compressed:
-  - `Content-Encoding: gzip`: received bytes are written to a temp file as-is while the same chunks are streamed through `ungzip`, in one pass, to validate the stream and compute the original size.
+  - `Content-Encoding: gzip`: received bytes are written to a temp file as-is while the same chunks are streamed through a gzip inflater, in one pass, to validate the stream and compute the original size. The body must be **exactly one complete gzip member**: the inflater must reach the member trailer, and no bytes may follow it.
   - absent/`identity`: received bytes are counted and gzip-compressed while writing to the temp file.
   - Both client and server may compress independent blocks in parallel. The result is always a **single gzip member** with one header and one trailer, not concatenated members, so every gzip decoder can read it. Compression is an internal implementation detail; the contract remains `Content-Encoding: gzip`.
-- **NET-024** Invalid gzip data returns `400 invalid_request` and removes the temp file.
+- **NET-024** Invalid gzip data returns `400 invalid_request` and removes the temp file. A member that ends before its trailer (a truncated upload) and bytes after the member (including a second member) are invalid.
 - **NET-025** If `max_upload_size > 0`, the server enforces it against both received bytes and decompressed original bytes. Exceeding it returns `413 payload_too_large` and removes the temp file.
 - **NET-026** The final blob is `data/files/<id>.gz`; metadata is committed only after the temp file has been renamed.
 - **NET-027** The response is `201 Created` with a `FileInfo` object.
