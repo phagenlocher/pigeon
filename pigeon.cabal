@@ -1,6 +1,6 @@
 cabal-version: 3.0
 name: pigeon
-version: 0.1.1.0
+version: 0.1.2.0
 synopsis: Authenticated file publishing with expiring downloads
 description:
   Pigeon accepts authenticated uploads, stores them gzip-compressed,
