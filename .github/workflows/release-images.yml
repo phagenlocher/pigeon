@@ -155,21 +155,6 @@ jobs:
           fetch-depth: 1
           persist-credentials: false
 
-      # The Haskell toolchain image plus an -O2 build of the dependency closure
-      # is several GB on a runner with ~14 GB free. Drop tool caches this build
-      # never uses before BuildKit starts filling the disk.
-      - name: Free disk space
-        run: |
-          set -euo pipefail
-          df -h /
-          sudo rm -rf /opt/hostedtoolcache/CodeQL \
-                      /opt/hostedtoolcache/PyPy \
-                      /opt/microsoft \
-                      /usr/local/lib/android \
-                      /usr/share/dotnet 2>/dev/null || true
-          docker image prune --all --force || true
-          df -h /
-
       - uses: docker/setup-buildx-action@v4
 
       - uses: docker/login-action@v4
