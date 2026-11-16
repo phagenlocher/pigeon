@@ -6,6 +6,7 @@ module Pigeon.Streaming (
   ResponseBodyFlush (..),
   waiStreamingBody,
   sourceHandleChunked,
+  coalesceChunks,
   gzipConduit,
   parallelGzipConduit,
   parallelGzipConduitWith,
@@ -302,6 +303,35 @@ ungzipConduit = do
 -- | Pass bytes through unchanged.
 passThrough :: (Monad m) => ConduitT ByteString ByteString m ()
 passThrough = awaitForever yield
+
+{- | Re-chunk a byte stream so each output chunk holds at least @target@
+bytes, except possibly the last.
+
+The inflater emits at most 32 KiB per chunk, so forwarding it directly costs a
+response-body write per 32 KiB. Buffering up to @target@ amortises that at a
+bounded cost: at most @target@ plus one input chunk is held per stream. A
+chunk that already meets the target is yielded without being copied, which
+keeps the gzip passthrough path at its read size.
+-}
+coalesceChunks :: forall m. (Monad m) => Int -> ConduitT ByteString ByteString m ()
+coalesceChunks target
+  | target <= 1 = passThrough
+  | otherwise = go 0 []
+ where
+  go :: Int -> [ByteString] -> ConduitT ByteString ByteString m ()
+  go pending chunks
+    | pending >= target = emit chunks >> go 0 []
+    | otherwise =
+        await >>= \case
+          Nothing -> emit chunks
+          Just chunk
+            | BS.null chunk -> go pending chunks
+            | otherwise -> go (pending + BS.length chunk) (chunk : chunks)
+
+  emit :: [ByteString] -> ConduitT ByteString ByteString m ()
+  emit [] = pure ()
+  emit [chunk] = yield chunk
+  emit chunks = yield (BS.concat (reverse chunks))
 
 {- | Stream a handle in chunks of up to @size@ bytes.
 

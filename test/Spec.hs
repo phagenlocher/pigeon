@@ -12,6 +12,7 @@ import Control.Monad (void)
 import Data.Aeson (decode, encode)
 import Data.Bits ((.&.))
 import Data.ByteString qualified as BS
+import Data.ByteString.Builder qualified as Builder
 import Data.ByteString.Char8 qualified as B8
 import Data.ByteString.Lazy qualified as LBS
 import Data.Conduit (runConduitRes, yield, (.|))
@@ -595,6 +596,25 @@ main = hspec $ do
           runConduitRes (sourceHandleChunked (128 * 1024) handle .| sinkList)
       chunks `shouldBe` []
 
+  describe "chunk coalescing" $ do
+    it "preserves bytes and emits the target size except for the tail (SRV-129)" $ do
+      let target = 128 * 1024
+          pieces = replicate 11 (BS.replicate (32 * 1024) 0x5a)
+          payload = BS.concat pieces
+      chunks <-
+        runConduitRes (mapM_ yield pieces .| coalesceChunks target .| sinkList)
+      map BS.length chunks `shouldBe` [target, target, BS.length payload - 2 * target]
+      BS.concat chunks `shouldBe` payload
+    it "yields nothing for empty input" $ do
+      chunks <-
+        runConduitRes (yield BS.empty .| coalesceChunks (128 * 1024) .| sinkList)
+      chunks `shouldBe` []
+    it "emits a chunk that already meets the target without splitting it" $ do
+      let payload = BS.replicate (200 * 1024) 0x11
+      chunks <-
+        runConduitRes (yield payload .| coalesceChunks (128 * 1024) .| sinkList)
+      chunks `shouldBe` [payload]
+
   describe "parallel gzip" $ do
     it "round-trips a payload spanning several blocks as one stream" $ do
       let payload = BS.concat (replicate 3 (BS.replicate (gzipBlockSize + 17) 0x5a))
@@ -1108,6 +1128,32 @@ main = hspec $ do
         closed <- hIsClosed handle
         result `shouldSatisfy` isLeft
         closed `shouldBe` True
+
+    it "writes an identity body in chunks of at least 64 KiB (SRV-129)" $
+      withTempDataDir $ \dir -> do
+        let payload = BS.concat (replicate 300 (BS.replicate 1024 0x61))
+            path = dir </> "blob.gz"
+        compressed <-
+          BS.concat
+            <$> runConduitRes (yield payload .| parallelGzipConduitWith 1 .| sinkList)
+        BS.writeFile path compressed
+        handle <- openBinaryFile path ReadMode
+        chunksRef <- newIORef ([] :: [BS.ByteString])
+        flushesRef <- newIORef (0 :: Int)
+        streamFileBody
+          handle
+          AcceptIdentity
+          ( ResponseChunkWriter $ \builder ->
+              atomicModifyIORef' chunksRef $ \chunks ->
+                (LBS.toStrict (Builder.toLazyByteString builder) : chunks, ())
+          )
+          (ResponseBodyFlush (atomicModifyIORef' flushesRef (\count -> (count + 1, ()))))
+        chunks <- reverse <$> readIORef chunksRef
+        flushes <- readIORef flushesRef
+        let early = take (length chunks - 1) chunks
+        map BS.length early `shouldSatisfy` all (>= 64 * 1024)
+        BS.concat chunks `shouldBe` payload
+        flushes `shouldBe` length chunks
 
   describe "HTTP integration" $ do
     it "serves health without authentication" $ withTestServer $ \_ port -> do

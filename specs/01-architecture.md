@@ -136,6 +136,11 @@ Why `ResourceT IO`:
 sourceHandleChunked :: Int -> Handle -> ConduitT i ByteString (ResourceT IO) ()
 -- Reads up to the given number of bytes per chunk from a Handle.
 
+coalesceChunks :: Int -> ConduitT ByteString ByteString m ()
+-- Buffers input until the pending bytes reach the given size, then emits one
+-- chunk. Every output chunk except the last holds at least that many bytes.
+-- A chunk that already meets the size is emitted without being copied.
+
 gzipConduit :: ConduitT ByteString ByteString (ResourceT IO) ()
 parallelGzipConduit :: ConduitT ByteString ByteString (ResourceT IO) ()
 ungzipConduit :: ConduitT ByteString ByteString (ResourceT IO) ()
@@ -220,9 +225,13 @@ GET/HEAD /f/:id
   │                                      └ correct: continue
   ▼
 Accept-Encoding gzip?
-  ├─ yes ──▶ sourceFile files/<owner-id>/<id>.gz ──▶ responseStream (Content-Encoding: gzip)
-  └─ no  ──▶ sourceFile .| ungzipConduit ──▶ responseStream (identity)
+  ├─ yes ──▶ read .gz in 128 KiB chunks ──▶ responseStream (Content-Encoding: gzip)
+  └─ no  ──▶ read .gz .| ungzipConduit .| coalesceChunks 128 KiB ──▶ responseStream (identity)
 ```
+
+Response bodies are written and flushed in chunks of at least 64 KiB (128 KiB
+in practice), so a 256 MiB download costs thousands of response writes instead
+of tens of thousands (SRV-129).
 
 The file handle is opened only after the DB row is fetched and the lock is released. A concurrent delete may unlink the path; on POSIX, an already-open handle continues to stream. If the open fails because the blob is missing, return `404` and log the inconsistency.
 

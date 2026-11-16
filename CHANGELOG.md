@@ -26,6 +26,11 @@
   downloads. A stream that decompresses faster than the network can carry it
   allocates enough to feel the smaller nursery; `+RTS -A16m` restores that case.
 
+* Downloads are now written in response-body chunks of about 128 KiB instead of
+  about 32 KiB, which cuts the number of chunk writes and flushes by roughly
+  four times and improves decompressed download throughput. Stored blobs,
+  headers, and the password form are unchanged.
+
 ## 0.1.2.0 -- 2026-11-15
 
 * Gzip uploads are now validated as exactly one complete gzip member. A stream

@@ -25,7 +25,6 @@ import Data.ByteString.Builder qualified as Builder
 import Data.ByteString.Char8 qualified as B8
 import Data.ByteString.Lazy qualified as LBS
 import Data.Conduit
-import Data.Conduit.Combinators (sourceHandle)
 import Data.Conduit.Combinators qualified as CC
 import Data.Maybe (fromMaybe, isJust, isNothing)
 import Data.Text (Text)
@@ -77,8 +76,10 @@ import Pigeon.Streaming (
   AcceptEncoding (..),
   ResponseBodyFlush (..),
   ResponseChunkWriter (..),
+  coalesceChunks,
   parseAcceptEncoding,
   passThrough,
+  sourceHandleChunked,
   ungzipConduit,
   waiStreamingBody,
  )
@@ -197,6 +198,16 @@ data ClientAborted = ClientAborted
 
 instance Exception ClientAborted
 
+{- | Response bodies are written in chunks of at least this size.
+
+The chunked transfer encoder pays a chunk header, a payload, and a flush per
+write, so the inflater's 32 KiB output chunks made one small write per 32 KiB.
+Reading the stored blob and coalescing decompressed output at 128 KiB cuts the
+write count by about four times (SRV-129).
+-}
+downloadChunkSize :: Int
+downloadChunkSize = 128 * 1024
+
 {- | Stream @handle@ into a WAI response body.
 
 HTTP\/2 runs the body on its own sender thread, so client disconnects surface
@@ -228,8 +239,9 @@ streamFileBody handle encoding (ResponseChunkWriter writeChunk) (ResponseBodyFlu
   streamHandle =
     runResourceT
       ( runConduit $
-          sourceHandle handle
+          sourceHandleChunked downloadChunkSize handle
             .| encodingConduit
+            .| coalesceChunks downloadChunkSize
             .| CC.mapM_ sendChunk
       )
 

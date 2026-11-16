@@ -240,6 +240,7 @@ Failures are injected through `StorageHooks` so the tests do not depend on a par
 - **TEST-186** A request with `Range` returns `200` and the full file.
 - **TEST-187** An unsupported method (`PUT`) → `405` with `Allow: GET, HEAD, POST`.
 - **TEST-188** `robots.txt` returns the disallow-all body.
+- **TEST-189** An identity download is written in chunks of at least 64 KiB, except a smaller final chunk, and each chunk is followed by a flush (SRV-129).
 
 ### 5.4 Password form
 
