@@ -72,6 +72,7 @@ import Pigeon.Client.ConfigFile (
 import Pigeon.Client.Output (
   estimateEta,
   formatEta,
+  formatFileTable,
   formatRate,
   formatTokenTable,
   formatUploadUrl,
@@ -394,6 +395,47 @@ main = hspec $ do
       formatTokenTable now [] `shouldBe` "No tokens.\n"
       formatTokenTable now [token] `shouldSatisfy` T.isInfixOf "0000000000000000"
       formatTokenTable now [token] `shouldSatisfy` T.isInfixOf "CREATED (UTC)"
+
+  describe "file list output" $ do
+    let now = epochToUtc 1761955200
+        adminOwner = adminOwnerId
+        userOwner = OwnerId "7q3m9x2k4v8p1c6d"
+        fileInfo owner fileId =
+          FileInfo
+            { fiId = FileId fileId,
+              fiOwner = owner,
+              fiFilename = "report.pdf",
+              fiSize = 12,
+              fiCreatedAt = now,
+              fiExpiresAt = addUTCTime 3600 now,
+              fiHasPassword = False,
+              fiUrl = "https://files.example.com/f/" <> fileId
+            }
+    it "hides OWNER when every row has the same owner" $ do
+      let table = formatFileTable now [fileInfo adminOwner "0000000000000000"]
+      table `shouldSatisfy` not . T.isInfixOf "OWNER"
+      table `shouldSatisfy` not . T.isInfixOf "admin"
+    it "hides OWNER for multiple files from one owner" $ do
+      let table =
+            formatFileTable
+              now
+              [ fileInfo userOwner "0000000000000000",
+                fileInfo userOwner "1111111111111111"
+              ]
+      table `shouldSatisfy` not . T.isInfixOf "OWNER"
+      table `shouldSatisfy` not . T.isInfixOf "7q3m9x2k4v8p1c6d"
+    it "shows OWNER when more than one owner is present" $ do
+      let table =
+            formatFileTable
+              now
+              [ fileInfo adminOwner "0000000000000000",
+                fileInfo userOwner "1111111111111111"
+              ]
+      table `shouldSatisfy` T.isInfixOf "OWNER"
+      table `shouldSatisfy` T.isInfixOf "admin"
+      table `shouldSatisfy` T.isInfixOf "7q3m9x2k4v8p1c6d"
+    it "keeps the empty result unchanged" $
+      formatFileTable now [] `shouldBe` "No files.\n"
 
   describe "filename sanitisation" $ do
     it "removes path separators and control characters" $ do

@@ -215,7 +215,13 @@ pigeon-client [GLOBAL] list
 
 - **CLI-100** Fetches `GET /api/v1/files`.
 - **CLI-101** The server already filters expired files.
-- **CLI-102** Human mode prints a table:
+- **CLI-102** Human mode prints a table. When every row has the same owner, the `OWNER` column is omitted:
+  ```
+  ID                NAME                           SIZE      EXPIRES (UTC)        LEFT      PW
+  7q3m9x2k4v8p1c6d  report.pdf                     12.4 MiB  2026-11-07 10:00:00  6d 23h    yes
+  8r4n0y3l5w9q2d7e  photo.jpg                      2.1 MiB   2026-11-01 08:30:00  22h 30m   no
+  ```
+  When the result contains more than one distinct owner, the `OWNER` column is shown:
   ```
   ID                OWNER             NAME                           SIZE      EXPIRES (UTC)        LEFT      PW
   7q3m9x2k4v8p1c6d  admin             report.pdf                     12.4 MiB  2026-11-07 10:00:00  6d 23h    yes
@@ -274,7 +280,7 @@ These commands require the admin token.
 - **CLI-165** `token delete` takes at least one token ID. It uses the same sequential partial-failure behaviour and exit codes as file `delete`.
 - **CLI-166** Human success output for `token delete` is `Deleted <id>`. Failures are one line on stderr.
 - **CLI-167** A user token calling a token command receives `403` and exits `3`.
-- **CLI-168** `list` adds an `OWNER` column and JSON `owner` field. The value is the token ID or `admin`.
+- **CLI-168** `list` shows the `OWNER` column only when the result contains more than one distinct owner. JSON always includes `owner`; its value is the token ID or `admin`.
 
 ## 8. Error handling and exit codes
 
@@ -409,4 +415,4 @@ pigeon-client --server https://files.example.com --token "$PIGEON_ADMIN_TOKEN" \
 - **CLI-A21** A user token uploaded file appears in that token's `list` and not in another user's `list`.
 - **CLI-A22** A user token cannot delete another token's file (exit `4`).
 - **CLI-A23** A user token calling `token list` exits `3`.
-- **CLI-A24** `list` includes the `OWNER` column and JSON `owner` field.
+- **CLI-A24** `list` omits `OWNER` for zero or one distinct owner and includes it for more than one. JSON always includes `owner`.

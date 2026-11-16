@@ -68,7 +68,8 @@ List or delete tokens:
       token delete 7q3m9x2k4v8p1c6d
 
 Use a user token exactly like the admin token for upload, list, and delete. The
-user sees only its own files; the admin's `list` includes an `OWNER` column.
+user sees only its own files. The `list` table omits the `OWNER` column when
+all rows have the same owner and shows it when files come from multiple owners.
 
 ## Config file
 

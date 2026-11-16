@@ -15,6 +15,7 @@ module Pigeon.Client.Output (
 
 import Data.Aeson (Value, object, (.=))
 import Data.Int (Int64)
+import Data.Set qualified as Set
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Time (UTCTime, diffUTCTime)
@@ -124,18 +125,30 @@ written to stdout for a successful upload.
 formatUploadUrl :: FileInfo -> Text
 formatUploadUrl info = fiUrl info <> "\n"
 
--- | Human-readable list table. Preserves the input order.
+{- | Human-readable list table. Preserves the input order.
+
+The owner column is omitted when every row has the same owner: a user-token
+list can only contain one owner, and an admin list with one owner does not need
+the redundant column either.
+-}
 formatFileTable :: UTCTime -> [FileInfo] -> Text
 formatFileTable _now [] = "No files.\n"
 formatFileTable now files =
   T.unlines (header : map renderRow files)
  where
+  showOwner :: Bool
+  showOwner = Set.size (Set.fromList (map fiOwner files)) > 1
+
+  ownerColumn :: Text -> Text
+  ownerColumn value
+    | showOwner = padRight 16 value <> "  "
+    | otherwise = ""
+
   header :: Text
   header =
     padRight 16 "ID"
       <> "  "
-      <> padRight 16 "OWNER"
-      <> "  "
+      <> ownerColumn "OWNER"
       <> padRight 40 "NAME"
       <> "  "
       <> padLeft 9 "SIZE"
@@ -150,8 +163,7 @@ formatFileTable now files =
   renderRow FileInfo{..} =
     padRight 16 (showFileId fiId)
       <> "  "
-      <> padRight 16 (unOwnerId fiOwner)
-      <> "  "
+      <> ownerColumn (unOwnerId fiOwner)
       <> padRight 40 (truncateName fiFilename)
       <> "  "
       <> padLeft 9 (formatSize fiSize)
