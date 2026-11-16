@@ -7,6 +7,8 @@ module Pigeon.Server.Storage (
   StoreRequest (..),
   StorageError (..),
   initStorage,
+  ensureOwnerDir,
+  ownerDir,
   storeUpload,
   openBlob,
   blobPath,
@@ -28,7 +30,7 @@ import Control.Exception.Safe (
   throwIO,
   try,
  )
-import Control.Monad (void, when)
+import Control.Monad (unless, void, when)
 import Crypto.Random (getRandomBytes)
 import Data.ByteString (ByteString)
 import Data.ByteString qualified as BS
@@ -60,7 +62,14 @@ import System.IO.Error (
   ioeGetErrorType,
   isDoesNotExistError,
  )
-import System.Posix.Files (deviceID, getFdStatus)
+import System.Posix.Files (
+  FileStatus,
+  deviceID,
+  getFdStatus,
+  getSymbolicLinkStatus,
+  isDirectory,
+  isSymbolicLink,
+ )
 import System.Posix.IO (
   OpenFileFlags (..),
   OpenMode (ReadOnly, WriteOnly),
@@ -88,8 +97,10 @@ import Pigeon.Streaming (
  )
 import Pigeon.Types (
   FileId (..),
+  OwnerId (..),
   StoredFile (..),
   generateFileId,
+  isValidOwnerId,
   lowerAsciiChar,
   mkFileId,
  )
@@ -141,7 +152,8 @@ data Storage = Storage
 
 -- | Everything needed to store one upload.
 data StoreRequest = StoreRequest
-  { srFilename :: Text,
+  { srOwnerId :: OwnerId,
+    srFilename :: Text,
     srLifetime :: Int64,
     srPasswordHash :: Maybe Text,
     srContentEncoding :: Maybe ByteString,
@@ -174,6 +186,8 @@ initStorage hooks root = do
   bracket (ensurePrivateDirectoryTree absoluteRoot) closeFd $ \rootFd ->
     bracket (ensurePrivateSubdirectory rootFd absoluteRoot "files") closeFd $ \filesFd ->
       bracket (ensurePrivateSubdirectory rootFd absoluteRoot "tmp") closeFd $ \tmpFd -> do
+        adminFd <- ensurePrivateSubdirectory filesFd filesDir "admin"
+        closeFd adminFd
         filesStatus <- getFdStatus filesFd
         tmpStatus <- getFdStatus tmpFd
         when (deviceID filesStatus /= deviceID tmpStatus) $
@@ -190,8 +204,34 @@ initStorage hooks root = do
 
 -- * Paths
 
-blobPath :: Storage -> FileId -> FilePath
-blobPath storage fileId = stFilesDir storage </> T.unpack (unFileId fileId) <> ".gz"
+-- | Directory holding all blobs owned by one owner.
+ownerDir :: Storage -> OwnerId -> FilePath
+ownerDir storage owner = stFilesDir storage </> T.unpack (unOwnerId owner)
+
+{- | Create or validate an owner directory with mode @0700@. The owner id is
+validated before it is used as a path component, and the directory is opened
+with @O_NOFOLLOW@ through the trusted @files/@ descriptor.
+-}
+ensureOwnerDir :: Storage -> OwnerId -> IO ()
+ensureOwnerDir storage owner = do
+  unless (isValidOwnerId owner) $
+    throwIO (StorageIo "invalid owner id")
+  bracket openFilesDir closeFd $ \filesFd ->
+    bracket
+      (ensurePrivateSubdirectory filesFd (stFilesDir storage) (T.unpack (unOwnerId owner)))
+      closeFd
+      (const (pure ()))
+ where
+  openFilesDir :: IO Fd
+  openFilesDir =
+    openFd
+      (stFilesDir storage)
+      ReadOnly
+      defaultFileFlags{directory = True, nofollow = True}
+
+blobPath :: Storage -> OwnerId -> FileId -> FilePath
+blobPath storage owner fileId =
+  ownerDir storage owner </> T.unpack (unFileId fileId) <> ".gz"
 
 tempPath :: Storage -> FileId -> ByteString -> FilePath
 tempPath storage fileId suffix =
@@ -201,12 +241,12 @@ tempPath storage fileId suffix =
       <> B8.unpack suffix
       <> ".part"
 
-blobExists :: Storage -> FileId -> IO Bool
-blobExists storage fileId = doesFileExist (blobPath storage fileId)
+blobExists :: Storage -> OwnerId -> FileId -> IO Bool
+blobExists storage owner fileId = doesFileExist (blobPath storage owner fileId)
 
-deleteBlob :: Storage -> FileId -> IO ()
-deleteBlob storage fileId =
-  removeIfExists (blobPath storage fileId)
+deleteBlob :: Storage -> OwnerId -> FileId -> IO ()
+deleteBlob storage owner fileId =
+  removeIfExists (blobPath storage owner fileId)
 
 removeIfExists :: FilePath -> IO ()
 removeIfExists path = removeFile path `catch` \(_ :: IOException) -> pure ()
@@ -242,7 +282,7 @@ doStore storage db StoreRequest{..} = do
   fileId <- pickFreshId db
   suffix <- randomSuffix
   let temp = tempPath storage fileId suffix
-      final = blobPath storage fileId
+      final = blobPath storage srOwnerId fileId
       hooks = stHooks storage
 
   ( do
@@ -261,10 +301,13 @@ doStore storage db StoreRequest{..} = do
       sizeStored <- fromIntegral <$> getFileSize temp
       sizeOriginal <- readIORef originalRef
 
+      ensureOwnerDir storage srOwnerId
       renameFile temp final
 
-      dirOutcome <- shSyncDir hooks (stFilesDir storage)
-      when (dirOutcome == DirSyncUnsupported) $ warnUnsupportedDirSync storage
+      ownerOutcome <- shSyncDir hooks (ownerDir storage srOwnerId)
+      when (ownerOutcome == DirSyncUnsupported) $ warnUnsupportedDirSync storage
+      filesOutcome <- shSyncDir hooks (stFilesDir storage)
+      when (filesOutcome == DirSyncUnsupported) $ warnUnsupportedDirSync storage
 
       finishedAt <- getCurrentTime
       let expiresAt = addUTCTime (fromIntegral srLifetime) finishedAt
@@ -272,6 +315,7 @@ doStore storage db StoreRequest{..} = do
           stored =
             StoredFile
               { sfId = fileId,
+                sfOwnerId = srOwnerId,
                 sfFilename = srFilename,
                 sfSize = sizeOriginal,
                 sfStoredSize = sizeStored,
@@ -284,7 +328,7 @@ doStore storage db StoreRequest{..} = do
       pure stored
     )
     `onException` removeIfExists temp
-    `onException` removeOrphanBlob storage fileId
+    `onException` removeOrphanBlob storage srOwnerId fileId
     `catch` \(err :: IOException) -> do
       logUploadIoFailure storage fileId err
       throwIO err
@@ -322,10 +366,10 @@ logUploadIoFailure storage fileId err =
 other removal failure is logged so the orphan sweeper can retry it later. This
 never throws, so it cannot mask the original upload failure (STORE-126).
 -}
-removeOrphanBlob :: Storage -> FileId -> IO ()
-removeOrphanBlob storage fileId =
+removeOrphanBlob :: Storage -> OwnerId -> FileId -> IO ()
+removeOrphanBlob storage owner fileId =
   ignoreHookErrors
-    (shRemoveBlob (stHooks storage) (blobPath storage fileId) `catch` handleFailure)
+    (shRemoveBlob (stHooks storage) (blobPath storage owner fileId) `catch` handleFailure)
  where
   handleFailure :: IOException -> IO ()
   handleFailure err
@@ -453,11 +497,13 @@ syncAndClose fd = do
 -- * Download
 
 -- | Open a blob read-only with @O_NOFOLLOW@. The caller owns the handle.
-openBlob :: Storage -> FileId -> IO Handle
-openBlob storage fileId = do
+openBlob :: Storage -> OwnerId -> FileId -> IO Handle
+openBlob storage owner fileId = do
+  unless (isValidOwnerId owner) $
+    throwIO (userError "invalid owner id")
   fd <-
     openFd
-      (blobPath storage fileId)
+      (blobPath storage owner fileId)
       ReadOnly
       defaultFileFlags{nofollow = True}
   handle <- fdToHandle fd
@@ -466,15 +512,43 @@ openBlob storage fileId = do
 
 -- * Cleanup helpers
 
-listBlobIds :: Storage -> IO [FileId]
+{- | List every stored blob as an @(owner, file id)@ pair. Only real owner
+directories are inspected; symlinks and unknown entries are ignored so orphan
+cleanup never follows a path outside @files/@.
+-}
+listBlobIds :: Storage -> IO [(OwnerId, FileId)]
 listBlobIds storage = do
   names <- listDirectory (stFilesDir storage)
-  pure
-    [ fileId
-    | name <- names,
-      ".gz" `isSuffixOf` name,
-      Right fileId <- [mkFileId (T.pack (take (length name - 3) name))]
-    ]
+  fmap concat . mapM listOwnerDir $ names
+ where
+  listOwnerDir :: FilePath -> IO [(OwnerId, FileId)]
+  listOwnerDir name
+    | T.length rawName /= 16 && rawName /= "admin" = pure []
+    | otherwise = do
+        let path = stFilesDir storage </> name
+        status <- getSymbolicLinkStatus path
+        if not (isDirectory status) || isSymlink status
+          then pure []
+          else do
+            entries <- listDirectory path
+            pure
+              [ (owner, fileId)
+              | entry <- entries,
+                ".gz" `isSuffixOf` entry,
+                Just owner <- [mkOwnerId rawName],
+                Right fileId <- [mkFileId (T.pack (take (length entry - 3) entry))]
+              ]
+   where
+    rawName :: Text
+    rawName = T.pack name
+
+  isSymlink :: FileStatus -> Bool
+  isSymlink = isSymbolicLink
+
+  mkOwnerId :: Text -> Maybe OwnerId
+  mkOwnerId raw =
+    let owner = OwnerId raw
+     in if isValidOwnerId owner then Just owner else Nothing
 
 listTempFiles :: Storage -> IO [FilePath]
 listTempFiles storage = do

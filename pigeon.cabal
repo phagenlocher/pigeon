@@ -60,6 +60,7 @@ library
     Pigeon.Server.Sweeper
     Pigeon.Server.Web
     Pigeon.Streaming
+    Pigeon.Token
     Pigeon.Types
 
   other-modules: Paths_pigeon

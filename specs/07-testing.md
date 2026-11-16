@@ -165,6 +165,16 @@ Tests must assert behavior, not implementation details. Do not weaken a test to 
 - **TEST-129** A gzip upload whose member never reaches its trailer (truncated at any point) returns `400` and leaves no row, blob, or temp file.
 - **TEST-130** A gzip upload with trailing bytes after the member, or with a second concatenated member, returns `400` and leaves no row, blob, or temp file.
 
+### 4.2a User tokens and owner directories
+
+- **TEST-120a** A fresh schema contains `tokens` and `files.owner_id`, and `user_version` remains `1`.
+- **TEST-120b** A version-1 database without the token schema is rejected by `migrate` without changing `user_version`.
+- **TEST-120c** An upload is stored under `files/<owner-id>/<file-id>.gz`, never directly under `files/`.
+- **TEST-120d** `listBlobIds` returns `(owner, file)` pairs and ignores unknown or symlinked directories.
+- **TEST-120e** Deleting a user token removes its token row, file rows, blobs, and owner directory.
+- **TEST-120f** The sweeper removes expired user tokens and their files.
+- **TEST-120g** An upload racing a token deletion leaves no row and no final blob.
+
 ### 4.3 Deletion and expiry
 
 - **TEST-130** Deleting a row removes it and unlinks the blob.
@@ -245,6 +255,21 @@ Failures are injected through `StorageHooks` so the tests do not depend on a par
 - **TEST-199** A filename containing `<script>` is HTML-escaped on the form page.
 - **TEST-200** A 200-byte password works through the form.
 - **TEST-201** The form page never contains the submitted password.
+
+### 5.4a User tokens and ownership
+
+- **TEST-202** The admin creates a user token; the response contains the plaintext token once and `expiresAt` is `null` when omitted.
+- **TEST-203** `GET /api/v1/tokens` lists the token ID and expiry but never the plaintext token or digest.
+- **TEST-204** A user token uploads, lists only its own file, and deletes only its own file.
+- **TEST-205** A second user token sees an empty list and receives `404` when deleting the first token's file.
+- **TEST-206** The admin list contains all live files with the correct `owner` value and may delete any file.
+- **TEST-207** A user token calling `GET` or `DELETE /api/v1/tokens` returns `403`.
+- **TEST-208** `DELETE /api/v1/tokens/admin` returns `400` and the admin token still authenticates.
+- **TEST-209** Deleting a user token removes its files, blobs, and owner directory; their URLs return `404`.
+- **TEST-210a** An expired user token returns `401` before the sweep.
+- **TEST-210b** The sweep deletes an expired token and all its files.
+- **TEST-210c** `expires_in = 0` or above `max_expiry` on token creation returns `400`.
+- **TEST-210d** Token creation and deletion logs and responses never contain the plaintext token or digest.
 
 ### 5.5 Health
 
@@ -355,6 +380,7 @@ hlint src app test
 | Streaming | TEST-250…257, TEST-288…293 |
 | TLS | TEST-220…227, TEST-267, TEST-268 |
 | CLI | TEST-230…249 |
+| User tokens and ownership | TEST-120a…120g, TEST-202…210d, TEST-260…271 |
 | Security headers and logs | TEST-185, TEST-198, TEST-260…271 |
 
 ## 12. Manual QA checklist

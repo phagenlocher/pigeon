@@ -14,18 +14,25 @@ module Pigeon.Server.Db (
   insertFile,
   lookupFile,
   listLiveFiles,
+  listLiveFilesForOwner,
   deleteFileRow,
+  deleteFileRowOwnedBy,
   deleteFileRows,
   expiredIds,
   allIds,
   allFiles,
   deleteRowsMissingBlob,
+  insertToken,
+  lookupToken,
+  listLiveUserTokens,
+  deleteTokenAndFiles,
+  expiredUserTokens,
   isUniqueViolation,
 ) where
 
 import Control.Concurrent.MVar
 import Control.Exception.Safe (SomeException, bracket, mask, onException, throwIO, try)
-import Control.Monad (forM, void)
+import Control.Monad (forM, unless, void)
 import Data.Int (Int64)
 import Data.Maybe (catMaybes)
 import Data.Set (Set)
@@ -46,8 +53,12 @@ import Pigeon.Server.PathSafety (
  )
 import Pigeon.Types (
   FileId (..),
+  OwnerId (..),
   StoredFile (..),
+  StoredToken (..),
+  TokenInfo (..),
   epochToUtc,
+  isValidOwnerId,
   mkFileId,
   utcToEpoch,
  )
@@ -97,7 +108,12 @@ pingDb db = do
     Left (_ :: SomeException) -> False
     Right () -> True
 
--- | Create or validate the schema.
+{- | Create or validate the schema.
+
+The schema is still version 1: user tokens and owner-scoped files are part of
+the initial schema. There is no migration from an earlier development schema;
+such a database is rejected with a clear error instead of being modified.
+-}
 migrate :: Db -> IO ()
 migrate db = withConn db $ \connection -> do
   versions <- query_ connection "PRAGMA user_version" :: IO [Only Int]
@@ -105,13 +121,53 @@ migrate db = withConn db $ \connection -> do
     [Only 0] -> do
       mapM_ (execute_ connection) schemaStatements
       execute_ connection "PRAGMA user_version = 1"
-    [Only 1] -> pure ()
+    [Only 1] -> validateSchema connection
     _ -> throwIO (userError "unsupported database schema version")
+
+{- | Reject a version-1 database that predates user tokens. The operator must
+recreate the development data directory; this function never changes the
+database or its @user_version@.
+-}
+validateSchema :: Connection -> IO ()
+validateSchema connection = do
+  tokenTable <-
+    query
+      connection
+      "SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?"
+      (Only ("tokens" :: Text)) ::
+      IO [Only Text]
+  ownerColumn <-
+    query
+      connection
+      "SELECT 1 FROM pragma_table_info('files') WHERE name = ?"
+      (Only ("owner_id" :: Text)) ::
+      IO [Only Int]
+  unless (not (null tokenTable) && not (null ownerColumn)) $
+    throwIO
+      ( userError
+          "database schema predates user tokens; recreate the data directory"
+      )
 
 schemaStatements :: [Query]
 schemaStatements =
-  [ "CREATE TABLE IF NOT EXISTS files (\
+  [ "CREATE TABLE IF NOT EXISTS tokens (\
     \ id TEXT PRIMARY KEY NOT NULL,\
+    \ kind TEXT NOT NULL CHECK (kind IN ('admin', 'user')),\
+    \ token_hash BLOB,\
+    \ created_at INTEGER NOT NULL,\
+    \ expires_at INTEGER,\
+    \ CHECK (\
+    \   (kind = 'admin' AND id = 'admin' AND token_hash IS NULL AND expires_at IS NULL)\
+    \   OR\
+    \   (kind = 'user' AND token_hash IS NOT NULL)\
+    \ ),\
+    \ CHECK (expires_at IS NULL OR expires_at > created_at)\
+    \ )",
+    "INSERT OR IGNORE INTO tokens (id, kind, token_hash, created_at, expires_at) \
+    \VALUES ('admin', 'admin', NULL, 0, NULL)",
+    "CREATE TABLE IF NOT EXISTS files (\
+    \ id TEXT PRIMARY KEY NOT NULL,\
+    \ owner_id TEXT NOT NULL REFERENCES tokens (id) ON DELETE RESTRICT,\
     \ filename TEXT NOT NULL,\
     \ size_original INTEGER NOT NULL CHECK (size_original >= 0),\
     \ size_stored INTEGER NOT NULL CHECK (size_stored >= 0),\
@@ -122,19 +178,21 @@ schemaStatements =
     \ CHECK (password_hash IS NULL OR length(password_hash) > 0)\
     \ )",
     "CREATE INDEX IF NOT EXISTS idx_files_expires_at ON files (expires_at)",
-    "CREATE INDEX IF NOT EXISTS idx_files_created_at ON files (created_at DESC)"
+    "CREATE INDEX IF NOT EXISTS idx_files_created_at ON files (created_at DESC)",
+    "CREATE INDEX IF NOT EXISTS idx_files_owner_expires ON files (owner_id, expires_at)"
   ]
 
--- * Queries
+-- * File queries
 
 insertFile :: Db -> StoredFile -> IO ()
 insertFile db StoredFile{..} = withConn db $ \connection ->
   execute
     connection
     "INSERT INTO files \
-    \(id, filename, size_original, size_stored, password_hash, created_at, expires_at) \
-    \VALUES (?, ?, ?, ?, ?, ?, ?)"
+    \(id, owner_id, filename, size_original, size_stored, password_hash, created_at, expires_at) \
+    \VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
     ( unFileId sfId,
+      unOwnerId sfOwnerId,
       sfFilename,
       sfSize,
       sfStoredSize,
@@ -148,7 +206,7 @@ lookupFile db fileId = withConn db $ \connection -> do
   rows <-
     query
       connection
-      "SELECT id, filename, size_original, size_stored, password_hash, created_at, expires_at \
+      "SELECT id, owner_id, filename, size_original, size_stored, password_hash, created_at, expires_at \
       \FROM files WHERE id = ?"
       (Only (unFileId fileId))
   case rows of
@@ -160,9 +218,20 @@ listLiveFiles db now = withConn db $ \connection -> do
   rows <-
     query
       connection
-      "SELECT id, filename, size_original, size_stored, password_hash, created_at, expires_at \
+      "SELECT id, owner_id, filename, size_original, size_stored, password_hash, created_at, expires_at \
       \FROM files WHERE expires_at > ? ORDER BY created_at DESC, id ASC"
       (Only (utcToEpoch now))
+  mapM rowToStored rows
+
+-- | List live files belonging to one owner.
+listLiveFilesForOwner :: Db -> OwnerId -> UTCTime -> IO [StoredFile]
+listLiveFilesForOwner db owner now = withConn db $ \connection -> do
+  rows <-
+    query
+      connection
+      "SELECT id, owner_id, filename, size_original, size_stored, password_hash, created_at, expires_at \
+      \FROM files WHERE owner_id = ? AND expires_at > ? ORDER BY created_at DESC, id ASC"
+      (unOwnerId owner, utcToEpoch now)
   mapM rowToStored rows
 
 allFiles :: Db -> IO [StoredFile]
@@ -170,14 +239,20 @@ allFiles db = withConn db $ \connection -> do
   rows <-
     query_
       connection
-      "SELECT id, filename, size_original, size_stored, password_hash, created_at, expires_at \
+      "SELECT id, owner_id, filename, size_original, size_stored, password_hash, created_at, expires_at \
       \FROM files"
   mapM rowToStored rows
 
-allIds :: Db -> IO (Set FileId)
+allIds :: Db -> IO (Set (OwnerId, FileId))
 allIds db = withConn db $ \connection -> do
-  rows <- query_ connection "SELECT id FROM files" :: IO [Only Text]
-  pure (Set.fromList [FileId t | Only t <- rows])
+  rows <- query_ connection "SELECT owner_id, id FROM files"
+  pure
+    ( Set.fromList
+        [ (owner, FileId t)
+        | (rawOwner, t) <- rows,
+          Just owner <- [ownerFromText rawOwner]
+        ]
+    )
 
 deleteFileRow :: Db -> FileId -> IO Bool
 deleteFileRow db fileId = withConn db $ \connection ->
@@ -186,45 +261,166 @@ deleteFileRow db fileId = withConn db $ \connection ->
     changed <- changes connection
     pure (changed > 0)
 
+-- | Delete a file only when it belongs to @owner@.
+deleteFileRowOwnedBy :: Db -> OwnerId -> FileId -> IO Bool
+deleteFileRowOwnedBy db owner fileId = withConn db $ \connection ->
+  withImmediate connection $ do
+    execute
+      connection
+      "DELETE FROM files WHERE id = ? AND owner_id = ?"
+      (unFileId fileId, unOwnerId owner)
+    changed <- changes connection
+    pure (changed > 0)
+
 {- | Delete several rows in one immediate transaction. Returns the ids that
 existed before deletion.
 -}
-deleteFileRows :: Db -> [FileId] -> IO [FileId]
+deleteFileRows :: Db -> [(OwnerId, FileId)] -> IO [(OwnerId, FileId)]
 deleteFileRows _ [] = pure []
 deleteFileRows db ids = withConn db $ \connection ->
   withImmediate connection $ do
     deleted <-
-      forM ids $ \fid -> do
-        execute connection "DELETE FROM files WHERE id = ?" (Only (unFileId fid))
+      forM ids $ \(owner, fid) -> do
+        execute
+          connection
+          "DELETE FROM files WHERE id = ? AND owner_id = ?"
+          (unFileId fid, unOwnerId owner)
         changed <- changes connection
-        pure (if changed > 0 then Just fid else Nothing)
+        pure (if changed > 0 then Just (owner, fid) else Nothing)
     pure (catMaybes deleted)
 
-expiredIds :: Db -> UTCTime -> IO [FileId]
+expiredIds :: Db -> UTCTime -> IO [(OwnerId, FileId)]
 expiredIds db now = withConn db $ \connection -> do
-  rows <- query connection "SELECT id FROM files WHERE expires_at <= ?" (Only (utcToEpoch now))
-  pure [FileId t | Only t <- rows]
+  rows <-
+    query
+      connection
+      "SELECT owner_id, id FROM files WHERE expires_at <= ?"
+      (Only (utcToEpoch now)) ::
+      IO [(Text, Text)]
+  pure
+    [ (owner, FileId t)
+    | (rawOwner, t) <- rows,
+      Just owner <- [ownerFromText rawOwner]
+    ]
 
 {- | Delete rows whose blob is missing. The predicate runs while the lock is
 held, so it must only stat a file, never stream it.
 -}
-deleteRowsMissingBlob :: Db -> (FileId -> IO Bool) -> IO [FileId]
+deleteRowsMissingBlob :: Db -> ((OwnerId, FileId) -> IO Bool) -> IO [(OwnerId, FileId)]
 deleteRowsMissingBlob db blobExists = do
   files <- allFiles db
   missing <- fmap catMaybes . mapM check $ files
   if null missing
     then pure []
-    else deleteFileRows db (map sfId missing)
+    else deleteFileRows db (map (\stored -> (sfOwnerId stored, sfId stored)) missing)
  where
   check :: StoredFile -> IO (Maybe StoredFile)
   check stored = do
-    exists <- blobExists (sfId stored)
+    exists <- blobExists (sfOwnerId stored, sfId stored)
     pure (if exists then Nothing else Just stored)
+
+-- * Token queries
+
+insertToken :: Db -> StoredToken -> IO ()
+insertToken db StoredToken{..} = withConn db $ \connection ->
+  execute
+    connection
+    "INSERT INTO tokens (id, kind, token_hash, created_at, expires_at) \
+    \VALUES (?, 'user', ?, ?, ?)"
+    ( unOwnerId stId,
+      stHash,
+      utcToEpoch stCreatedAt,
+      fmap utcToEpoch stExpiresAt
+    )
+
+lookupToken :: Db -> OwnerId -> IO (Maybe StoredToken)
+lookupToken db owner = withConn db $ \connection -> do
+  rows <-
+    query
+      connection
+      "SELECT id, token_hash, created_at, expires_at \
+      \FROM tokens WHERE id = ? AND kind = 'user'"
+      (Only (unOwnerId owner))
+  case rows of
+    [] -> pure Nothing
+    ((rawId, tokenHash, createdAt, expiresAt) : _) ->
+      case ownerFromText rawId of
+        Nothing -> throwIO (userError "corrupt token id in database")
+        Just tokenId ->
+          pure
+            ( Just
+                StoredToken
+                  { stId = tokenId,
+                    stHash = tokenHash,
+                    stCreatedAt = epochToUtc createdAt,
+                    stExpiresAt = fmap epochToUtc expiresAt
+                  }
+            )
+
+listLiveUserTokens :: Db -> UTCTime -> IO [TokenInfo]
+listLiveUserTokens db now = withConn db $ \connection -> do
+  rows <-
+    query
+      connection
+      "SELECT id, created_at, expires_at FROM tokens \
+      \WHERE kind = 'user' AND (expires_at IS NULL OR expires_at > ?) \
+      \ORDER BY created_at DESC, id ASC"
+      (Only (utcToEpoch now)) ::
+      IO [(Text, Int64, Maybe Int64)]
+  pure
+    [ TokenInfo
+        { tiId = owner,
+          tiCreatedAt = epochToUtc createdAt,
+          tiExpiresAt = fmap epochToUtc expiresAt
+        }
+    | (rawId, createdAt, expiresAt) <- rows,
+      Just owner <- [ownerFromText rawId]
+    ]
+
+{- | Delete a user token and all of its file rows in one transaction. Returns
+the deleted file ids, or 'Nothing' when the token does not exist (or is the
+admin token).
+-}
+deleteTokenAndFiles :: Db -> OwnerId -> IO (Maybe [FileId])
+deleteTokenAndFiles db owner = withConn db $ \connection ->
+  withImmediate connection $ do
+    tokens <-
+      query
+        connection
+        "SELECT id FROM tokens WHERE id = ? AND kind = 'user'"
+        (Only (unOwnerId owner)) ::
+        IO [Only Text]
+    case tokens of
+      [] -> pure Nothing
+      _ -> do
+        rows <-
+          query
+            connection
+            "SELECT id FROM files WHERE owner_id = ?"
+            (Only (unOwnerId owner)) ::
+            IO [Only Text]
+        execute connection "DELETE FROM files WHERE owner_id = ?" (Only (unOwnerId owner))
+        execute
+          connection
+          "DELETE FROM tokens WHERE id = ? AND kind = 'user'"
+          (Only (unOwnerId owner))
+        pure (Just [FileId t | Only t <- rows])
+
+expiredUserTokens :: Db -> UTCTime -> IO [OwnerId]
+expiredUserTokens db now = withConn db $ \connection -> do
+  rows <-
+    query
+      connection
+      "SELECT id FROM tokens WHERE kind = 'user' AND expires_at <= ?"
+      (Only (utcToEpoch now)) ::
+      IO [Only Text]
+  pure [owner | Only raw <- rows, Just owner <- [ownerFromText raw]]
 
 -- * Helpers
 
 type Row =
   ( Text,
+    Text,
     Text,
     Int64,
     Int64,
@@ -234,13 +430,15 @@ type Row =
   )
 
 rowToStored :: Row -> IO StoredFile
-rowToStored (rawId, filename, sizeOriginal, sizeStored, passwordHash, createdAt, expiresAt) =
-  case mkFileId rawId of
-    Left err -> throwIO (userError ("corrupt file id in database: " <> T.unpack err))
-    Right fileId ->
+rowToStored (rawId, rawOwner, filename, sizeOriginal, sizeStored, passwordHash, createdAt, expiresAt) =
+  case (mkFileId rawId, ownerFromText rawOwner) of
+    (Left err, _) -> throwIO (userError ("corrupt file id in database: " <> T.unpack err))
+    (_, Nothing) -> throwIO (userError "corrupt owner id in database")
+    (Right fileId, Just owner) ->
       pure
         StoredFile
           { sfId = fileId,
+            sfOwnerId = owner,
             sfFilename = filename,
             sfSize = sizeOriginal,
             sfStoredSize = sizeStored,
@@ -248,6 +446,11 @@ rowToStored (rawId, filename, sizeOriginal, sizeStored, passwordHash, createdAt,
             sfCreatedAt = epochToUtc createdAt,
             sfExpiresAt = epochToUtc expiresAt
           }
+
+ownerFromText :: Text -> Maybe OwnerId
+ownerFromText raw =
+  let owner = OwnerId raw
+   in if isValidOwnerId owner then Just owner else Nothing
 
 -- | @BEGIN IMMEDIATE@ so the write lock is taken at transaction start.
 withImmediate :: Connection -> IO a -> IO a

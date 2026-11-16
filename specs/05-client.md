@@ -9,8 +9,9 @@ Related: `02-network-api.md`, `05-client.md` (this file), `06-security.md`
 `pigeon-client` is a terminal client. It can:
 
 - Upload a local file.
-- List live files.
-- Delete files by ID.
+- List live files it owns (the admin sees all files).
+- Delete files it owns (the admin may delete any).
+- Create, list, and delete user tokens when run with the admin token.
 
 It cannot download files in v1. Browser downloads use `/f/:id`.
 
@@ -36,6 +37,9 @@ Commands:
               [--password | --password-stdin] [--no-compress]
   list
   delete ID...
+  token create [--expires-in DURATION]
+  token list
+  token delete ID...
 
 Global options:
   --server URL             Server base URL (env: PIGEON_SERVER)
@@ -52,7 +56,7 @@ Global options:
 ```
 
 - **CLI-001** Global options appear before the command. `pigeon-client upload --help` prints upload-specific help.
-- **CLI-002** `--json` is global and affects `upload`, `list`, and `delete`.
+- **CLI-002** `--json` is global and affects `upload`, `list`, `delete`, and `token` commands.
 - **CLI-003** `--quiet` and `--verbose` are mutually exclusive.
 - **CLI-004** Unknown commands and options are usage errors with exit code `2`.
 - **CLI-005** The client never downloads a file in v1.
@@ -73,8 +77,8 @@ Global options:
 
 ### 3.2 Token
 
-- **CLI-020** A token is required for `upload`, `list`, and `delete`.
-- **CLI-021** Sources are `--token`, `--token-file`, `PIGEON_TOKEN`, and the config file's `token` or `token-file` key (CLI-046).
+- **CLI-020** A token is required for every command, including `token`.
+- **CLI-021** Sources are `--token`, `--token-file`, `PIGEON_TOKEN`, and the config file's `token` or `token-file` key (CLI-046). The same source supplies either the admin token or a user token; the client does not distinguish them.
 - **CLI-022** If both `--token` and `--token-file` are supplied, that is a usage error. The same holds for `token` and `token-file` within the config file.
 - **CLI-023** Precedence is `--token`, then `--token-file`, then `PIGEON_TOKEN`, then config `token`, then config `token-file`.
 - **CLI-024** Token validation matches the server: 16–512 printable ASCII characters, no whitespace.
@@ -189,6 +193,7 @@ JSON mode:
 ```json
 {
   "id": "7q3m9x2k4v8p1c6d",
+  "owner": "7q3m9x2k4v8p1c6d",
   "filename": "report.pdf",
   "size": 12345678,
   "createdAt": "2026-10-31T10:00:00Z",
@@ -210,11 +215,17 @@ pigeon-client [GLOBAL] list
 
 - **CLI-100** Fetches `GET /api/v1/files`.
 - **CLI-101** The server already filters expired files.
-- **CLI-102** Human mode prints a table:
+- **CLI-102** Human mode prints a table. When every row has the same owner, the `OWNER` column is omitted:
   ```
   ID                NAME                           SIZE      EXPIRES (UTC)        LEFT      PW
   7q3m9x2k4v8p1c6d  report.pdf                     12.4 MiB  2026-11-07 10:00:00  6d 23h    yes
   8r4n0y3l5w9q2d7e  photo.jpg                      2.1 MiB   2026-11-01 08:30:00  22h 30m   no
+  ```
+  When the result contains more than one distinct owner, the `OWNER` column is shown:
+  ```
+  ID                OWNER             NAME                           SIZE      EXPIRES (UTC)        LEFT      PW
+  7q3m9x2k4v8p1c6d  admin             report.pdf                     12.4 MiB  2026-11-07 10:00:00  6d 23h    yes
+  8r4n0y3l5w9q2d7e  0a1b2c3d4e5f6g7h  photo.jpg                      2.1 MiB   2026-11-01 08:30:00  22h 30m   no
   ```
 - **CLI-103** Columns are separated by two spaces. Names longer than 40 display characters are truncated with `...`; `--json` contains the full name.
 - **CLI-104** If the list is empty, print `No files.`
@@ -251,7 +262,27 @@ pigeon-client [GLOBAL] delete ID...
   ```
 - **CLI-121** JSON goes to stdout even on partial failure; the exit code still reflects failure.
 
-## 7. Error handling and exit codes
+## 7. `token`
+
+```text
+pigeon-client [GLOBAL] token create [--expires-in DURATION]
+pigeon-client [GLOBAL] token list
+pigeon-client [GLOBAL] token delete ID...
+```
+
+These commands require the admin token.
+
+- **CLI-160** `token create` calls `POST /api/v1/tokens` with optional `expires_in`. If omitted, the server creates a token with no expiry.
+- **CLI-161** Human output for `token create` is only the plaintext token followed by a newline. This is the only time the client prints a user token.
+- **CLI-162** JSON output for `token create` is a `CreatedToken` object with `id`, `token`, `createdAt`, and `expiresAt`.
+- **CLI-163** `token list` prints the table `ID  CREATED (UTC)  EXPIRES (UTC)  LEFT`, or `No tokens.` when empty.
+- **CLI-164** `token list --json` prints an array of `TokenInfo` objects. It never contains a plaintext token or digest.
+- **CLI-165** `token delete` takes at least one token ID. It uses the same sequential partial-failure behaviour and exit codes as file `delete`.
+- **CLI-166** Human success output for `token delete` is `Deleted <id>`. Failures are one line on stderr.
+- **CLI-167** A user token calling a token command receives `403` and exits `3`.
+- **CLI-168** `list` shows the `OWNER` column only when the result contains more than one distinct owner. JSON always includes `owner`; its value is the token ID or `admin`.
+
+## 8. Error handling and exit codes
 
 | Code | Meaning |
 | --- | --- |
@@ -281,7 +312,7 @@ pigeon-client [GLOBAL] delete ID...
 - **CLI-138** `--verbose` may print stack context, but never the token or password.
 - **CLI-139** `SIGINT` uses the default process behavior; no custom exit code is required.
 
-## 8. HTTP client details
+## 9. HTTP client details
 
 - **CLI-140** The client uses `servant-client` with `PigeonAPI`.
 - **CLI-141** A single `Manager` is created per process.
@@ -293,7 +324,7 @@ pigeon-client [GLOBAL] delete ID...
 - **CLI-147** List responses are small JSON; buffering them is acceptable.
 - **CLI-148** `--verbose` logs method, path, status, and duration to stderr, but not headers or bodies.
 
-## 9. Duration grammar
+## 10. Duration grammar
 
 Both `--expires-in` and `--timeout` use:
 
@@ -309,7 +340,7 @@ unit     := integer ("s" | "m" | "h" | "d" | "w")
 - **CLI-154** `1d12h` is 129600 seconds.
 - **CLI-155** The server's duration parser accepts the same grammar for its configuration options.
 
-## 10. Examples
+## 11. Examples
 
 ```bash
 # One-time setup, then flag-free uploads
@@ -350,9 +381,18 @@ pigeon-client --json --server https://files.example.com --token-file ~/.pigeon-t
 # Delete one file
 pigeon-client --server https://files.example.com --token-file ~/.pigeon-token \
   delete 7q3m9x2k4v8p1c6d
+
+# Admin creates a user token that expires in 30 days
+pigeon-client --server https://files.example.com --token "$PIGEON_ADMIN_TOKEN" \
+  token create --expires-in 30d
+
+# Admin lists and deletes user tokens
+pigeon-client --server https://files.example.com --token "$PIGEON_ADMIN_TOKEN" token list
+pigeon-client --server https://files.example.com --token "$PIGEON_ADMIN_TOKEN" \
+  token delete 7q3m9x2k4v8p1c6d
 ```
 
-## 11. Client acceptance criteria
+## 12. Client acceptance criteria
 
 - **CLI-A01** A 1 GiB upload succeeds without the client reading the file into memory.
 - **CLI-A02** Default `upload` omits `expires_in` and the server applies its default expiry.
@@ -371,3 +411,8 @@ pigeon-client --server https://files.example.com --token-file ~/.pigeon-token \
 - **CLI-A17** The client refuses to follow HTTP redirects.
 - **CLI-A18** With a config file supplying `server` and a token, `pigeon-client upload FILE` succeeds with no flags and no environment variables.
 - **CLI-A19** Error output for a malformed config file never contains the file's `token` or `token-file` value.
+- **CLI-A20** `token create` prints the plaintext token exactly once; `token list` never prints it.
+- **CLI-A21** A user token uploaded file appears in that token's `list` and not in another user's `list`.
+- **CLI-A22** A user token cannot delete another token's file (exit `4`).
+- **CLI-A23** A user token calling `token list` exits `3`.
+- **CLI-A24** `list` omits `OWNER` for zero or one distinct owner and includes it for more than one. JSON always includes `owner`.

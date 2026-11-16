@@ -8,19 +8,21 @@ module Pigeon.Client.Output (
   progressLineVisible,
   formatUploadUrl,
   formatFileTable,
+  formatTokenTable,
   truncateName,
   deleteResultJson,
 ) where
 
 import Data.Aeson (Value, object, (.=))
 import Data.Int (Int64)
+import Data.Set qualified as Set
 import Data.Text (Text)
 import Data.Text qualified as T
 import Data.Time (UTCTime, diffUTCTime)
 import Data.Time.Format qualified as Time
 
 import Pigeon.Duration (humanizeRemaining)
-import Pigeon.Types (FileId (..), FileInfo (..))
+import Pigeon.Types (FileId (..), FileInfo (..), OwnerId (..), TokenInfo (..))
 
 -- | Format bytes using binary units and one decimal place.
 formatSize :: Int64 -> Text
@@ -123,16 +125,30 @@ written to stdout for a successful upload.
 formatUploadUrl :: FileInfo -> Text
 formatUploadUrl info = fiUrl info <> "\n"
 
--- | Human-readable list table. Preserves the input order.
+{- | Human-readable list table. Preserves the input order.
+
+The owner column is omitted when every row has the same owner: a user-token
+list can only contain one owner, and an admin list with one owner does not need
+the redundant column either.
+-}
 formatFileTable :: UTCTime -> [FileInfo] -> Text
 formatFileTable _now [] = "No files.\n"
 formatFileTable now files =
   T.unlines (header : map renderRow files)
  where
+  showOwner :: Bool
+  showOwner = Set.size (Set.fromList (map fiOwner files)) > 1
+
+  ownerColumn :: Text -> Text
+  ownerColumn value
+    | showOwner = padRight 16 value <> "  "
+    | otherwise = ""
+
   header :: Text
   header =
     padRight 16 "ID"
       <> "  "
+      <> ownerColumn "OWNER"
       <> padRight 40 "NAME"
       <> "  "
       <> padLeft 9 "SIZE"
@@ -147,6 +163,7 @@ formatFileTable now files =
   renderRow FileInfo{..} =
     padRight 16 (showFileId fiId)
       <> "  "
+      <> ownerColumn (unOwnerId fiOwner)
       <> padRight 40 (truncateName fiFilename)
       <> "  "
       <> padLeft 9 (formatSize fiSize)
@@ -156,6 +173,35 @@ formatFileTable now files =
       <> padRight 8 (remainingUntil now fiExpiresAt)
       <> "  "
       <> (if fiHasPassword then "yes" else "no")
+
+-- | Human-readable token table. Preserves the input order.
+formatTokenTable :: UTCTime -> [TokenInfo] -> Text
+formatTokenTable _now [] = "No tokens.\n"
+formatTokenTable now tokens =
+  T.unlines (header : map renderRow tokens)
+ where
+  header :: Text
+  header =
+    padRight 16 "ID"
+      <> "  "
+      <> padRight 19 "CREATED (UTC)"
+      <> "  "
+      <> padRight 19 "EXPIRES (UTC)"
+      <> "  "
+      <> "LEFT"
+
+  renderRow :: TokenInfo -> Text
+  renderRow TokenInfo{..} =
+    padRight 16 (unOwnerId tiId)
+      <> "  "
+      <> padRight 19 (formatTimeUtc tiCreatedAt)
+      <> "  "
+      <> padRight 19 (maybe "never" formatTimeUtc tiExpiresAt)
+      <> "  "
+      <> maybe "never" (remainingUntil now) tiExpiresAt
+
+formatTimeUtc :: UTCTime -> Text
+formatTimeUtc = T.pack . Time.formatTime Time.defaultTimeLocale "%Y-%m-%d %H:%M:%S"
 
 -- | Remaining time until @expiresAt@, clamped at zero and humanized.
 remainingUntil :: UTCTime -> UTCTime -> Text

@@ -14,6 +14,7 @@ pigeon (library)
 ├── Pigeon.Types        shared domain types
 ├── Pigeon.Duration     duration parsing/formatting
 ├── Pigeon.Password     PBKDF2 password hashing wrapper
+├── Pigeon.Token        user-token formatting and SHA-256 hashing
 ├── Pigeon.Streaming    gzip/ungzip, counting, Accept-Encoding
 ├── Pigeon.Config       shared option/env helpers
 ├── server modules      app monad, database, storage, handlers, web, sweeper, auth, log
@@ -30,19 +31,20 @@ The API type is defined exactly once in `Pigeon.API` and imported by both binari
 | Component | Responsibility | Must not do |
 | --- | --- | --- |
 | `Pigeon.API` | Servant types, stream aliases, endpoint paths, media types | Contain business logic or database calls |
-| `Pigeon.Types` | `FileId`, `FileInfo`, `StoredFile`, `Health`, error DTOs, JSON instances | Perform I/O |
+| `Pigeon.Types` | `FileId`, `OwnerId`, `FileInfo`, `TokenInfo`, `CreatedToken`, `StoredFile`, `StoredToken`, `Health`, error DTOs, JSON instances | Perform I/O |
+| `Pigeon.Token` | User-token format, base64url secret, SHA-256 digest | Read configuration or log secrets |
 | `Pigeon.Duration` | Parse `7d`, `1d12h`; format remaining time | Know about HTTP or files |
 | `Pigeon.Password` | PBKDF2 hashing/verification via the `password` package | Read configuration or log secrets |
 | `Pigeon.Streaming` | `gzip`/`ungzip` conduits, byte counters, `Accept-Encoding` parsing | Decide policy |
 | `Pigeon.Server.App` | `App` reader monad over `AppEnv`, `MonadLogger` instance, safe exception instances | Own configuration or open sockets |
 | `Pigeon.Server.Config` | Parse/validate server flags and environment | Open sockets or files |
-| `Pigeon.Server.Db` | SQLite connection, schema, migrations, queries | Stream blobs while holding the connection |
+| `Pigeon.Server.Db` | SQLite connection, v1 schema, token and owner-scoped queries | Stream blobs while holding the connection |
 | `Pigeon.Server.PathSafety` | Symlink rejection, private directory creation, descriptor-based permissions | Choose storage policy or open network resources |
 | `Pigeon.Server.Storage` | Temp files, atomic rename, blob streams, deletion | Authorize requests |
 | `Pigeon.Server.Handlers` | Authenticated upload/list/delete/health handlers | Write HTML forms |
 | `Pigeon.Server.Web` | `/f/:id` GET/HEAD/POST, HTML form, file streaming | Touch the metadata API endpoints |
 | `Pigeon.Server.Sweeper` | Expiry deletion, orphan reconciliation | Block request handlers |
-| `Pigeon.Server.Auth` | Bearer token parsing and constant-time check | Log the token |
+| `Pigeon.Server.Auth` | Bearer parsing, admin comparison, user-token resolution to `PigeonUser` | Log the token |
 | `Pigeon.Server.Log` | `MonadLogger`, `logInfo`/`logWarn`/`logError`/`logDebug`, request logging, redaction | Log headers, queries, passwords |
 | `Pigeon.Client.Api` | HTTP manager, Servant client environment, error mapping | Format output |
 | `Pigeon.Client.Commands` | Upload/list/delete orchestration | Parse global flags |
@@ -56,14 +58,31 @@ The API type is defined exactly once in `Pigeon.API` and imported by both binari
 newtype FileId = FileId { unFileId :: Text }
   deriving (Eq, Ord, Show)
 
+newtype OwnerId = OwnerId { unOwnerId :: Text }
+  deriving (Eq, Ord, Show)
+
 data FileInfo = FileInfo
   { fiId          :: FileId
+  , fiOwner       :: OwnerId
   , fiFilename    :: Text
   , fiSize        :: Int64
   , fiCreatedAt   :: UTCTime
   , fiExpiresAt   :: UTCTime
   , fiHasPassword :: Bool
   , fiUrl         :: Text
+  }
+
+data TokenInfo = TokenInfo
+  { tiId        :: OwnerId
+  , tiCreatedAt :: UTCTime
+  , tiExpiresAt :: Maybe UTCTime
+  }
+
+data CreatedToken = CreatedToken
+  { ctId        :: OwnerId
+  , ctToken     :: Secret
+  , ctCreatedAt :: UTCTime
+  , ctExpiresAt :: Maybe UTCTime
   }
 
 data Health = Health
@@ -80,6 +99,7 @@ newtype ApiErrorEnvelope = ApiErrorEnvelope { unApiErrorEnvelope :: ApiError }
 
 data StoredFile = StoredFile
   { sfId           :: FileId
+  , sfOwnerId      :: OwnerId
   , sfFilename     :: Text
   , sfSize         :: Int64
   , sfStoredSize   :: Int64
@@ -89,7 +109,7 @@ data StoredFile = StoredFile
   }
 ```
 
-`sfPasswordHash` is the exact `PasswordHash PBKDF2` text returned by the `password` package. It is opaque outside the storage/web layers and is never exposed by the API.
+`sfPasswordHash` is the exact `PasswordHash PBKDF2` text returned by the `password` package. It is opaque outside the storage/web layers and is never exposed by the API. `sfOwnerId` is `admin` or a user-token ID. `ctToken` is exposed only in the creation response.
 
 `FileInfo` JSON uses the field names in `02-network-api.md`. `UTCTime` is serialized as RFC3339 UTC with a literal `Z`.
 
@@ -168,6 +188,7 @@ HTTP request body (chunked)
   ▼
 server handler
   │  auth check before consuming body
+  │  resolve PigeonUser (admin or user token)
   │  validate filename, expiry, and password
   ▼
   ├─ Content-Encoding: gzip ──▶ sinkFile temp (bytes as received)
@@ -177,7 +198,8 @@ server handler
   │
   └─ identity ─────────────────▶ countBytes + parallelGzipConduit + sinkFile temp
   ▼
-temp file is gzip; fsync temp; rename to files/<id>.gz; fsync files/
+temp file is gzip; fsync temp; rename to files/<owner-id>/<id>.gz;
+fsync owner dir and files/
   ▼
 insert metadata row (short transaction, committed)
   ▼
@@ -198,7 +220,7 @@ GET/HEAD /f/:id
   │                                      └ correct: continue
   ▼
 Accept-Encoding gzip?
-  ├─ yes ──▶ sourceFile files/<id>.gz ──▶ responseStream (Content-Encoding: gzip)
+  ├─ yes ──▶ sourceFile files/<owner-id>/<id>.gz ──▶ responseStream (Content-Encoding: gzip)
   └─ no  ──▶ sourceFile .| ungzipConduit ──▶ responseStream (identity)
 ```
 
@@ -221,8 +243,8 @@ The file handle is opened only after the DB row is fetched and the lock is relea
 Startup:
 
 1. Parse and validate `ServerConfig`.
-2. Create `<data-dir>`, `<data-dir>/files`, `<data-dir>/tmp` with mode `0700` where supported.
-3. Open SQLite; apply pragmas; run migrations.
+2. Create `<data-dir>`, `<data-dir>/files`, `<data-dir>/files/admin`, and `<data-dir>/tmp` with mode `0700` where supported.
+3. Open SQLite; apply pragmas; run `migrate`. The schema is still version 1; a pre-token version-1 database is rejected with a clear message and is never modified.
 4. Reconcile: remove stale temp files, remove old orphan blobs, delete rows whose blob is missing.
 5. Start the sweeper thread.
 6. Install `SIGINT`/`SIGTERM` handlers.
@@ -310,6 +332,7 @@ library
       Pigeon.Types
       Pigeon.Duration
       Pigeon.Password
+      Pigeon.Token
       Pigeon.Streaming
       Pigeon.Config
       Pigeon.Server.Config
@@ -419,4 +442,5 @@ runApp :: AppEnv -> App a -> IO (Either ServerError a)
 - **ARCH-005** `servant-conduit` instances are imported exactly once in the shared API module, and both executables build without orphan-instance warnings.
 - **ARCH-006** The client uses `--no-compress` only to change the request encoding; the server still stores gzip.
 - **ARCH-007** Killing the process during an upload leaves either no row and no final blob, or a row with a valid blob. It never leaves a row pointing at a partial final blob.
-- **ARCH-008** The only browser-facing HTML is the password form and small error pages; there is no management UI.
+- **ARCH-008** The only browser-facing HTML is the password form and small error pages; there is no management UI. Token management is API/CLI only.
+- **ARCH-009a** A file's blob path always includes its owner directory; no module constructs `files/<id>.gz` for a new upload.

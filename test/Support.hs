@@ -11,6 +11,7 @@ module Support (
   withRawServer,
   testClientEnv,
   authHeader,
+  authHeaderFor,
   uploadRaw,
   uploadGzip,
   uploadGzipRaw,
@@ -18,8 +19,19 @@ module Support (
   uploadWithExpires,
   uploadWithExpiresEither,
   uploadSlow,
+  uploadWithToken,
   listFiles,
+  listFilesWith,
   deleteFile,
+  deleteFileWith,
+  createToken,
+  createTokenWith,
+  listTokensWith,
+  deleteTokenWith,
+  deleteFileResultWith,
+  deleteTokenResultWith,
+  listTokensResultWith,
+  listFilesResultWith,
   download,
   postForm,
   requestWith,
@@ -79,7 +91,7 @@ import Pigeon.API (PigeonAPI, UploadBody)
 import Pigeon.Server (closeAppEnv, mkApp, mkAppEnv)
 import Pigeon.Server.Config (ServerConfig (..), TlsMode (..), defaultServerConfig)
 import Pigeon.Server.Env (AppEnv (..))
-import Pigeon.Types (FileId (..), FileInfo, mkSecret)
+import Pigeon.Types (CreatedToken, FileId (..), FileInfo, OwnerId, TokenInfo, mkSecret)
 
 testToken :: Text
 testToken = "test-token-at-least-16-chars"
@@ -219,7 +231,7 @@ listFiles env =
   expectRight
     =<< runClientM
       ( do
-          let (_upload :<|> list :<|> _delete :<|> _health) =
+          let (_upload :<|> list :<|> _delete :<|> _createToken :<|> _listTokens :<|> _deleteToken :<|> _health) =
                 SC.client (Proxy :: Proxy PigeonAPI)
           list (Just authHeader)
       )
@@ -231,11 +243,140 @@ deleteFile env fileId =
     expectRight
       =<< runClientM
         ( do
-            let (_upload :<|> _list :<|> delete :<|> _health) =
+            let (_upload :<|> _list :<|> delete :<|> _createToken :<|> _listTokens :<|> _deleteToken :<|> _health) =
                   SC.client (Proxy :: Proxy PigeonAPI)
             delete fileId (Just authHeader)
         )
         env
+
+-- | Authentication header for an arbitrary token.
+authHeaderFor :: Text -> Text
+authHeaderFor token = "Bearer " <> token
+
+createToken :: ClientEnv -> Maybe Int64 -> IO CreatedToken
+createToken env = createTokenWith env testToken
+
+createTokenWith :: ClientEnv -> Text -> Maybe Int64 -> IO CreatedToken
+createTokenWith env token expires =
+  expectRight
+    =<< runClientM
+      ( do
+          let (_upload :<|> _list :<|> _delete :<|> create :<|> _listTokens :<|> _deleteToken :<|> _health) =
+                SC.client (Proxy :: Proxy PigeonAPI)
+          create (Just (authHeaderFor token)) expires
+      )
+      env
+
+listTokensWith :: ClientEnv -> Text -> IO [TokenInfo]
+listTokensWith env token =
+  expectRight
+    =<< runClientM
+      ( do
+          let (_upload :<|> _list :<|> _delete :<|> _createToken :<|> listTokens :<|> _deleteToken :<|> _health) =
+                SC.client (Proxy :: Proxy PigeonAPI)
+          listTokens (Just (authHeaderFor token))
+      )
+      env
+
+deleteTokenWith :: ClientEnv -> Text -> OwnerId -> IO ()
+deleteTokenWith env token owner =
+  void $
+    expectRight
+      =<< runClientM
+        ( do
+            let (_upload :<|> _list :<|> _delete :<|> _createToken :<|> _listTokens :<|> deleteToken :<|> _health) =
+                  SC.client (Proxy :: Proxy PigeonAPI)
+            deleteToken owner (Just (authHeaderFor token))
+        )
+        env
+
+uploadWithToken :: ClientEnv -> Text -> Text -> ByteString -> IO FileInfo
+uploadWithToken env token filename bytes =
+  expectRight
+    =<< runClientM
+      (uploadCall (Just (authHeaderFor token)) (Just filename) Nothing Nothing Nothing (yield bytes))
+      env
+
+listFilesWith :: ClientEnv -> Text -> IO [FileInfo]
+listFilesWith env token =
+  expectRight
+    =<< runClientM
+      ( do
+          let (_upload :<|> list :<|> _delete :<|> _createToken :<|> _listTokens :<|> _deleteToken :<|> _health) =
+                SC.client (Proxy :: Proxy PigeonAPI)
+          list (Just (authHeaderFor token))
+      )
+      env
+
+deleteFileWith :: ClientEnv -> Text -> FileId -> IO ()
+deleteFileWith env token fileId =
+  void $
+    expectRight
+      =<< runClientM
+        ( do
+            let (_upload :<|> _list :<|> delete :<|> _createToken :<|> _listTokens :<|> _deleteToken :<|> _health) =
+                  SC.client (Proxy :: Proxy PigeonAPI)
+            delete fileId (Just (authHeaderFor token))
+        )
+        env
+
+-- | Delete a file, returning the HTTP status on failure.
+deleteFileResultWith :: ClientEnv -> Text -> FileId -> IO (Either Int ())
+deleteFileResultWith env token fileId = do
+  result <-
+    runClientM
+      ( do
+          let (_upload :<|> _list :<|> delete :<|> _createToken :<|> _listTokens :<|> _deleteToken :<|> _health) =
+                SC.client (Proxy :: Proxy PigeonAPI)
+          delete fileId (Just (authHeaderFor token))
+      )
+      env
+  pure (either (Left . clientErrorStatus) (const (Right ())) result)
+
+-- | List files, returning the HTTP status on failure.
+listFilesResultWith :: ClientEnv -> Text -> IO (Either Int [FileInfo])
+listFilesResultWith env token = do
+  result <-
+    runClientM
+      ( do
+          let (_upload :<|> list :<|> _delete :<|> _createToken :<|> _listTokens :<|> _deleteToken :<|> _health) =
+                SC.client (Proxy :: Proxy PigeonAPI)
+          list (Just (authHeaderFor token))
+      )
+      env
+  pure (either (Left . clientErrorStatus) Right result)
+
+-- | List tokens, returning the HTTP status on failure.
+listTokensResultWith :: ClientEnv -> Text -> IO (Either Int [TokenInfo])
+listTokensResultWith env token = do
+  result <-
+    runClientM
+      ( do
+          let (_upload :<|> _list :<|> _delete :<|> _createToken :<|> listTokens :<|> _deleteToken :<|> _health) =
+                SC.client (Proxy :: Proxy PigeonAPI)
+          listTokens (Just (authHeaderFor token))
+      )
+      env
+  pure (either (Left . clientErrorStatus) Right result)
+
+-- | Delete a token, returning the HTTP status on failure.
+deleteTokenResultWith :: ClientEnv -> Text -> OwnerId -> IO (Either Int ())
+deleteTokenResultWith env token owner = do
+  result <-
+    runClientM
+      ( do
+          let (_upload :<|> _list :<|> _delete :<|> _createToken :<|> _listTokens :<|> deleteToken :<|> _health) =
+                SC.client (Proxy :: Proxy PigeonAPI)
+          deleteToken owner (Just (authHeaderFor token))
+      )
+      env
+  pure (either (Left . clientErrorStatus) (const (Right ())) result)
+
+-- | HTTP status carried by a Servant client error, or 0 for transport errors.
+clientErrorStatus :: SC.ClientError -> Int
+clientErrorStatus (SC.FailureResponse _ response) =
+  HTTP.statusCode (SC.responseStatusCode response)
+clientErrorStatus _ = 0
 
 uploadWithPassword :: ClientEnv -> Text -> Text -> ByteString -> IO FileInfo
 uploadWithPassword env filename password bytes =
@@ -260,7 +401,7 @@ uploadCall ::
   UploadBody ->
   ClientM FileInfo
 uploadCall auth filename expires encoding password body =
-  let (upload :<|> _list :<|> _delete :<|> _health) =
+  let (upload :<|> _list :<|> _delete :<|> _createToken :<|> _listTokens :<|> _deleteToken :<|> _health) =
         SC.client (Proxy :: Proxy PigeonAPI)
    in upload auth filename expires encoding password body
 

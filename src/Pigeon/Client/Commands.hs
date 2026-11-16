@@ -51,6 +51,7 @@ import Pigeon.Client.Config (
   ClientConfig (..),
   DeleteOptions (..),
   PasswordSource (..),
+  TokenCommand (..),
   UploadOptions (..),
  )
 import Pigeon.Client.Output (
@@ -60,6 +61,7 @@ import Pigeon.Client.Output (
   formatFileTable,
   formatRate,
   formatSize,
+  formatTokenTable,
   formatUploadUrl,
   progressLineVisible,
   transferRate,
@@ -75,8 +77,10 @@ import Pigeon.Streaming (
 import Pigeon.Types (
   ApiError (..),
   ApiErrorEnvelope (..),
+  CreatedToken (..),
   FileId (..),
   FileInfo (..),
+  OwnerId (..),
   epochToUtc,
   secretText,
  )
@@ -97,6 +101,7 @@ runClient cfg = do
     Upload options -> runUpload cfg clientApi options
     List -> runList cfg clientApi
     Delete options -> runDelete cfg clientApi options
+    Token command -> runToken cfg clientApi command
   pure (if code == 0 then ExitSuccess else ExitFailure code)
 
 {- | Match the capability count to the work in this run.
@@ -338,6 +343,73 @@ deleteExitCode failed =
   case nub (map (failureExit . snd) failed) of
     [code] -> code
     _ -> 1
+
+-- * Tokens
+
+runToken :: ClientConfig -> ClientApi -> TokenCommand -> IO Int
+runToken cfg clientApi = \case
+  TokenCreate expires -> runTokenCreate cfg clientApi expires
+  TokenList -> runTokenList cfg clientApi
+  TokenDelete ids -> runTokenDelete cfg clientApi ids
+
+runTokenCreate :: ClientConfig -> ClientApi -> Maybe Int64 -> IO Int
+runTokenCreate cfg clientApi expires = do
+  result <-
+    runApi clientApi $
+      acCreateToken (caApi clientApi) (bearerAuthorization cfg) expires
+  case result of
+    Left err -> reportFailure cfg (mapClientError err)
+    Right created -> do
+      if ccJson cfg
+        then LBS.putStr (encode created) >> putStrLn ""
+        else TIO.putStrLn (secretText (ctToken created))
+      pure 0
+
+runTokenList :: ClientConfig -> ClientApi -> IO Int
+runTokenList cfg clientApi = do
+  result <- runApi clientApi $ acListTokens (caApi clientApi) (bearerAuthorization cfg)
+  case result of
+    Left err -> reportFailure cfg (mapClientError err)
+    Right tokens -> do
+      if ccJson cfg
+        then LBS.putStr (encode tokens) >> putStrLn ""
+        else do
+          now <- getCurrentTime
+          TIO.putStr (formatTokenTable now tokens)
+      pure 0
+
+runTokenDelete :: ClientConfig -> ClientApi -> [Text] -> IO Int
+runTokenDelete cfg clientApi ids = do
+  let owners = map OwnerId ids
+  outcomes <-
+    forM owners $ \owner -> do
+      result <-
+        runApi clientApi $
+          acDeleteToken (caApi clientApi) owner (bearerAuthorization cfg)
+      pure (owner, result)
+  let deleted = [unOwnerId owner | (owner, Right _) <- outcomes]
+      failed =
+        [ (unOwnerId owner, mapClientError err)
+        | (owner, Left err) <- outcomes
+        ]
+  if ccJson cfg
+    then do
+      LBS.putStr
+        ( encode
+            ( deleteResultJson
+                deleted
+                [(tokenId, failureCode failure, failureMessage failure) | (tokenId, failure) <- failed]
+            )
+        )
+      putStrLn ""
+    else do
+      forM_ deleted $ \tokenId -> TIO.putStrLn ("Deleted " <> tokenId)
+      forM_ failed $ \(tokenId, failure) ->
+        TIO.hPutStrLn stderr ("error: " <> tokenId <> ": " <> failureMessage failure)
+  pure (deleteExitCode failed)
+
+bearerAuthorization :: ClientConfig -> Maybe Text
+bearerAuthorization cfg = Just ("Bearer " <> secretText (ccToken cfg))
 
 -- * Errors and output
 

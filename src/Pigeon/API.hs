@@ -15,7 +15,7 @@ import Data.Text (Text)
 import Servant
 import Servant.Conduit ()
 
-import Pigeon.Types (FileId, FileInfo, Health)
+import Pigeon.Types (CreatedToken, FileId, FileInfo, Health, OwnerId, TokenInfo)
 
 -- | A streaming upload body. Nothing in this type permits whole-file buffering.
 type UploadBody = ConduitT () ByteString (ResourceT IO) ()
@@ -43,6 +43,26 @@ type PigeonAPI =
              :> "v1"
              :> "files"
              :> Capture "id" FileId
+             :> Header "Authorization" Text
+             :> DeleteNoContent
+         )
+    :<|> ( "api"
+             :> "v1"
+             :> "tokens"
+             :> Header "Authorization" Text
+             :> QueryParam "expires_in" Int64
+             :> PostCreated '[JSON] CreatedToken
+         )
+    :<|> ( "api"
+             :> "v1"
+             :> "tokens"
+             :> Header "Authorization" Text
+             :> Get '[JSON] [TokenInfo]
+         )
+    :<|> ( "api"
+             :> "v1"
+             :> "tokens"
+             :> Capture "id" OwnerId
              :> Header "Authorization" Text
              :> DeleteNoContent
          )

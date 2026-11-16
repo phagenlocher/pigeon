@@ -32,7 +32,7 @@ import Servant.Client (
 
 import Pigeon.API (PigeonAPI, UploadBody)
 import Pigeon.Client.Config (ClientConfig (..))
-import Pigeon.Types (FileId, FileInfo)
+import Pigeon.Types (CreatedToken, FileId, FileInfo, OwnerId, TokenInfo)
 
 -- | The generated client functions, named for readability.
 data ApiClient = ApiClient
@@ -45,7 +45,10 @@ data ApiClient = ApiClient
       UploadBody ->
       ClientM FileInfo,
     acList :: Maybe Text -> ClientM [FileInfo],
-    acDelete :: FileId -> Maybe Text -> ClientM NoContent
+    acDelete :: FileId -> Maybe Text -> ClientM NoContent,
+    acCreateToken :: Maybe Text -> Maybe Int64 -> ClientM CreatedToken,
+    acListTokens :: Maybe Text -> ClientM [TokenInfo],
+    acDeleteToken :: OwnerId -> Maybe Text -> ClientM NoContent
   }
 
 -- | A manager and environment shared for the process lifetime.
@@ -74,7 +77,8 @@ mkClientApi cfg = do
             managerModifyRequest = \request -> pure request{redirectCount = 0}
           }
   manager <- newManager settings
-  let (upload :<|> list :<|> delete :<|> _health) = client (Proxy :: Proxy PigeonAPI)
+  let (upload :<|> list :<|> delete :<|> createToken :<|> listTokens :<|> deleteToken :<|> _health) =
+        client (Proxy :: Proxy PigeonAPI)
   pure
     ClientApi
       { caEnv = mkClientEnv manager (ccServer cfg),
@@ -82,7 +86,10 @@ mkClientApi cfg = do
           ApiClient
             { acUpload = upload,
               acList = list,
-              acDelete = delete
+              acDelete = delete,
+              acCreateToken = createToken,
+              acListTokens = listTokens,
+              acDeleteToken = deleteToken
             }
       }
 

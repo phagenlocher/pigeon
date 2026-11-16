@@ -38,8 +38,8 @@ main = do
 | `--port` | `8080` | TCP port. |
 | `--data-dir` | `./data` | Root for database, blobs, and temp files. |
 | `--db` | `<data-dir>/pigeon.db` | SQLite path override. |
-| `--token` | none | Shared bearer token. |
-| `--token-file` | none | File containing the bearer token on its first line. |
+| `--token` | none | Admin bearer token. Also manages user tokens. |
+| `--token-file` | none | File containing the admin token on its first line. |
 | `--tls-cert` | none | PEM certificate chain. |
 | `--tls-key` | none | PEM private key (unencrypted). |
 | `--no-tls` | off | Explicitly disable TLS for development. |
@@ -77,14 +77,15 @@ Each flag has an environment fallback. Command-line flags take precedence.
 
 ### 2.3 Token resolution
 
-- **SRV-001** A token is mandatory. The server refuses to start without one.
-- **SRV-002** Token sources are `--token`, `--token-file`, and `PIGEON_TOKEN`.
+- **SRV-001** An admin token is mandatory. The server refuses to start without one.
+- **SRV-002** Admin-token sources are `--token`, `--token-file`, and `PIGEON_TOKEN`.
 - **SRV-003** If both `--token` and `--token-file` are supplied, that is a usage error.
 - **SRV-004** Precedence is command-line token, then token file, then environment.
 - **SRV-005** The token must be 16–512 printable ASCII characters with no whitespace.
 - **SRV-006** `--token-file` reads the first line, strips trailing `\r`/`\n`, and rejects an empty result.
 - **SRV-007** The token is stored in a `Secret` newtype whose `Show` instance prints `<redacted>`.
-- **SRV-008** The token is never written to logs, error messages, or the database.
+- **SRV-008** The admin token is never written to logs, error messages, or the database. User tokens are stored only as SHA-256 digests.
+- **SRV-009** The admin token authenticates as the admin. User tokens are resolved from the `tokens` table.
 
 ### 2.4 Expiry policy
 
@@ -188,6 +189,9 @@ server env =
        uploadHandler
   :<|> listHandler
   :<|> deleteHandler
+  :<|> createTokenHandler
+  :<|> listTokensHandler
+  :<|> deleteTokenHandler
   :<|> healthHandler
   :<|> webHandler env          -- Raw: FileId -> Application
   :<|> robotsHandler
@@ -223,7 +227,7 @@ uploadHandler
 
 Algorithm:
 
-1. **SRV-070** Require a valid bearer token. Return `401` before reading the body.
+1. **SRV-070** Authenticate the bearer token and resolve a `PigeonUser` (admin or user token). Return `401` before reading the body. The upload owner is `admin` or the token ID.
 2. **SRV-071** Resolve `expires_in`: supplied value, or `default_expiry`. Validate against `max_expiry`.
 3. **SRV-072** Sanitize `filename`. If absent or empty after sanitization, use `file`.
 4. **SRV-074** Decode `X-Pigeon-Password` if present to bytes, validate base64url and 1–1024 byte length, and decode as UTF-8 without normalization. Invalid UTF-8 is `400 invalid_request`.
@@ -246,17 +250,24 @@ Password hashing cost happens only when a password is supplied. An upload withou
 
 - **SRV-090** Require auth.
 - **SRV-091** Use `now` from the server clock.
-- **SRV-092** Call `listLiveFiles db now`.
+- **SRV-092** The admin calls `listLiveFiles db now`; a user token calls `listLiveFilesForOwner db owner now`.
 - **SRV-093** Map each row to `FileInfo` and return `200`.
 - **SRV-094** Do not include `password_hash`, its salt, or its derived key in any response.
 
 ### 7.2 Delete
 
 - **SRV-095** Require auth.
-- **SRV-096** Look up the row. If absent, return `404 not_found`.
-- **SRV-097** Delete the row in a committed transaction, then unlink the blob outside the DB lock.
+- **SRV-096** Look up the row. If absent, return `404 not_found`. A user token may delete only a row whose owner is its own; another owner's row returns `404 not_found`.
+- **SRV-097** Delete the row in a committed transaction, then unlink the blob outside the DB lock. The blob path uses the row's owner.
 - **SRV-098** Return `204` even if the blob was already missing or the unlink failed; log the failure.
-- **SRV-099** Do not delete an arbitrary path. Only `files/<validated-id>.gz`.
+- **SRV-099** Do not delete an arbitrary path. Only `files/<validated-owner>/<validated-id>.gz`.
+
+### 7.3 Token management
+
+- **SRV-091a** `createTokenHandler` requires the admin token, validates optional `expires_in` against `max_expiry`, generates a 16-character owner ID and a 32-byte secret, stores only the SHA-256 digest, creates the owner directory, and returns the plaintext token once.
+- **SRV-091b** `listTokensHandler` requires the admin token and returns live user tokens. It never includes the plaintext token or digest.
+- **SRV-091c** `deleteTokenHandler` requires the admin token, rejects the literal `admin` owner, deletes the token and all its file rows in one transaction, unlinks the blobs, removes the owner directory when empty, and returns `204`.
+- **SRV-091d** A valid user token on a token-management endpoint returns `403 forbidden`.
 
 ## 8. Web route
 
@@ -407,3 +418,7 @@ ERROR request id=... cause="..."
 - **SRV-A12** Request logs contain no query strings, tokens, passwords, or filenames.
 - **SRV-A13** `/healthz` returns `503` when SQLite is unavailable.
 - **SRV-A14** `robots.txt` disallows all crawling.
+- **SRV-A15** Admin creates a user token; a second user token cannot list or delete the first token's files.
+- **SRV-A16** Deleting or expiring a user token removes its files and blobs.
+- **SRV-A17** A valid user token calling a token endpoint returns `403`; the admin token cannot be deleted.
+- **SRV-A18** A version-1 database without the token schema fails startup without changing `user_version`.
