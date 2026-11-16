@@ -329,6 +329,7 @@ Run the built `pigeon-client` against a test server. Use `readProcessWithExitCod
 - **TEST-291** An identity upload larger than one block is stored as one gzip member; identity download is byte-equal and gzip passthrough returns the stored bytes without a `Content-Length`.
 - **TEST-292** A zero-byte upload produces a valid gzip stream and `size = 0`; block-parallel compression of an empty stream does not produce an empty body.
 - **TEST-293** A 32 MiB round-trip succeeds under a bounded heap (`+RTS -M192m`, or record why a tighter cap is flaky per `TEST-251`).
+- **TEST-294** Block-parallel gzip emits blocks in input order for every worker count and block alignment, and a downstream failure or an early stop cancels the in-flight workers and returns without hanging.
 
 ## 9. Security tests
 

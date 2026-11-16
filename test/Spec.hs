@@ -8,14 +8,16 @@ module Main (main) where
 
 import Control.Concurrent (threadDelay)
 import Control.Exception.Safe (IOException, SomeException, bracket_, throwIO, try)
-import Control.Monad (void)
+import Control.Monad (forM_, void)
+import Control.Monad.IO.Class (liftIO)
+import Control.Monad.Trans.Resource (ResourceT)
 import Data.Aeson (decode, encode)
 import Data.Bits ((.&.))
 import Data.ByteString qualified as BS
 import Data.ByteString.Builder qualified as Builder
 import Data.ByteString.Char8 qualified as B8
 import Data.ByteString.Lazy qualified as LBS
-import Data.Conduit (runConduitRes, yield, (.|))
+import Data.Conduit (ConduitT, await, runConduitRes, yield, (.|))
 import Data.Conduit.Combinators (sinkList, sinkNull)
 import Data.Conduit.Zlib (gzip, ungzip)
 import Data.Either (fromLeft, isLeft, isRight)
@@ -638,6 +640,33 @@ main = hspec $ do
       decompressed <-
         BS.concat <$> runConduitRes (yield compressed .| ungzip .| sinkList)
       decompressed `shouldBe` payload
+    it "round-trips every worker count and block alignment (TEST-288, TEST-294)" $
+      forM_ [1, 2, 3, 8] $ \workers ->
+        forM_ [0, 1, gzipBlockSize - 1, gzipBlockSize, 2 * gzipBlockSize + 7] $ \size -> do
+          let payload = B8.replicate size 'x'
+          compressed <-
+            BS.concat
+              <$> runConduitRes (yield payload .| parallelGzipConduitWith workers .| sinkList)
+          decompressed <-
+            BS.concat <$> runConduitRes (yield compressed .| ungzipConduit .| sinkList)
+          decompressed `shouldBe` payload
+    it "stops cleanly when the downstream stops early (TEST-294)" $ do
+      let payload = BS.concat (replicate 8 (BS.replicate gzipBlockSize 0x42))
+      first <-
+        runConduitRes $
+          yield payload
+            .| parallelGzipConduitWith 4
+            .| (await >>= maybe (pure BS.empty) pure)
+      BS.length first `shouldSatisfy` (> 0)
+    it "propagates a downstream failure and cancels the workers (TEST-294)" $ do
+      let payload = BS.concat (replicate 8 (BS.replicate gzipBlockSize 0x42))
+          failingSink :: ConduitT BS.ByteString o (ResourceT IO) ()
+          failingSink = do
+            _ <- await
+            liftIO (throwIO (userError "downstream failed"))
+      runConduitRes
+        (yield payload .| parallelGzipConduitWith 4 .| failingSink)
+        `shouldThrow` anyException
 
   describe "gzip validation" $ do
     it "decodes exactly one complete member" $ do

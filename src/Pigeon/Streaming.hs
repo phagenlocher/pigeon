@@ -24,12 +24,12 @@ module Pigeon.Streaming (
 where
 
 import Control.Concurrent (getNumCapabilities)
-import Control.Concurrent.Async (mapConcurrently)
-import Control.Monad (foldM, unless, when)
+import Control.Concurrent.Async (Async, async, cancel, wait)
+import Control.Monad (unless, void, when)
 import Control.Monad.Catch (Exception, MonadThrow, throwM)
 import Control.Monad.IO.Class (MonadIO, liftIO)
 import Control.Monad.Primitive (PrimMonad)
-import Control.Monad.Trans.Resource (ResourceT)
+import Control.Monad.Trans.Resource (ReleaseKey, ResourceT, register, unprotect)
 import Data.Bits (shiftR)
 import Data.ByteString (ByteString)
 import Data.ByteString qualified as BS
@@ -59,7 +59,7 @@ import Data.Streaming.Zlib (
   isCompleteInflate,
  )
 import Data.Word (Word32, Word8)
-import Foreign.C.Types (CUInt (..), CULong (..))
+import Foreign.C.Types (CLong (..), CUInt (..), CULong (..))
 import Foreign.Ptr (Ptr, castPtr)
 import Network.Wai (StreamingBody)
 import System.IO (Handle)
@@ -111,8 +111,11 @@ single capability the stream falls back to 'gzipConduit', so small files are
 not delayed by block buffering. An empty input still produces a valid empty
 gzip stream, matching the streaming compressor.
 
-Memory is bounded by @2 * workers * 'gzipBlockSize'@ per active stream. An
-exception in one worker cancels the others and propagates to the caller.
+Reading is pipelined with compression: at most @workers@ blocks are in flight,
+and the conductor submits the next block before waiting for the oldest one.
+Memory is therefore bounded by about @workers@ blocks plus their compressed
+output, and is independent of the stream length. An exception in one worker,
+or in the downstream consumer, cancels the other in-flight workers.
 -}
 parallelGzipConduit :: ConduitT ByteString ByteString (ResourceT IO) ()
 parallelGzipConduit = do
@@ -132,33 +135,88 @@ parallelGzipConduitWith workers
   | workers <= 1 = gzipConduit
   | otherwise = do
       yield gzipHeader
-      chunksOfE gzipBlockSize .| compressBatches
- where
-  compressBatches :: ConduitT ByteString ByteString (ResourceT IO) ()
-  compressBatches = go 0 0
-   where
-    go :: Word32 -> Word32 -> ConduitT ByteString ByteString (ResourceT IO) ()
-    go crc total = do
-      blocks <- collectBlocks workers
-      case blocks of
-        [] -> do
-          terminator <- liftIO finishEmptyBlock
-          yield terminator
-          yield (gzipTrailer crc total)
-        _ -> do
-          crc' <- liftIO (foldM crc32Chunk crc blocks)
-          let total' :: Word32
-              total' = total + fromIntegral (sum (map BS.length blocks))
-          compressed <- liftIO (mapConcurrently compressBlockRaw blocks)
-          mapM_ yield compressed
-          total' `seq` go crc' total'
+      chunksOfE gzipBlockSize .| compressPipelined workers
 
-  collectBlocks :: Int -> ConduitT ByteString ByteString (ResourceT IO) [ByteString]
-  collectBlocks 0 = pure []
-  collectBlocks n =
+{- | Compress blocks on a bounded pool while the conductor keeps reading.
+
+The window holds at most @workers@ blocks. Each iteration waits for the oldest
+result, emits it, and immediately submits the next block, so a read overlaps
+with the compression of every other block in the window instead of alternating
+with it. Results are emitted in input order. Workers also compute each block's
+CRC-32, so the trailer is folded from per-block CRCs rather than from a second
+pass over the input.
+
+Every worker is registered with the surrounding 'ResourceT' scope, so an
+exception anywhere in the pipeline releases the scope, cancels the remaining
+workers, and cannot leave one compressing behind a closed stream.
+-}
+compressPipelined :: Int -> ConduitT ByteString ByteString (ResourceT IO) ()
+compressPipelined workers = do
+  window <- fill workers
+  drain window 0 0
+ where
+  fill :: Int -> ConduitT ByteString ByteString (ResourceT IO) [InFlight]
+  fill 0 = pure []
+  fill n =
     await >>= \case
       Nothing -> pure []
-      Just block -> (block :) <$> collectBlocks (n - 1)
+      Just block -> do
+        pending <- start block
+        rest <- fill (n - 1)
+        pure (pending : rest)
+
+  start :: ByteString -> ConduitT ByteString ByteString (ResourceT IO) InFlight
+  start block = do
+    pending <- liftIO (async (compressBlock block))
+    release <- register (cancel pending)
+    pure InFlight{ifResult = pending, ifRelease = release}
+
+  drain :: [InFlight] -> Word32 -> Word32 -> ConduitT ByteString ByteString (ResourceT IO) ()
+  drain [] crc total = do
+    terminator <- liftIO finishEmptyBlock
+    yield terminator
+    yield (gzipTrailer crc total)
+  drain (InFlight{ifResult, ifRelease} : rest) crc total = do
+    result <- liftIO (wait ifResult)
+    void (unprotect ifRelease)
+    yield (cbCompressed result)
+    crc' <- liftIO (crc32Combine crc (cbCrc result) (cbOriginalSize result))
+    let total' :: Word32
+        total' = total + fromIntegral (cbOriginalSize result)
+    await >>= \case
+      Nothing -> drain rest crc' total'
+      Just block -> do
+        pending <- start block
+        drain (rest <> [pending]) crc' total'
+
+{- | One block compressed on a worker thread.
+
+The CRC-32 covers the block's uncompressed bytes. Strict fields keep a stalled
+window from accumulating thunks.
+-}
+data CompressedBlock = CompressedBlock
+  { cbCrc :: !Word32,
+    cbOriginalSize :: !Int,
+    cbCompressed :: !ByteString
+  }
+
+-- | A running worker and the key that cancels it if the stream ends early.
+data InFlight = InFlight
+  { ifResult :: Async CompressedBlock,
+    ifRelease :: ReleaseKey
+  }
+
+-- | Compress one block and hash its uncompressed bytes on a worker thread.
+compressBlock :: ByteString -> IO CompressedBlock
+compressBlock block = do
+  crc <- crc32Chunk 0 block
+  compressed <- compressBlockRaw block
+  pure
+    CompressedBlock
+      { cbCrc = crc,
+        cbOriginalSize = BS.length block,
+        cbCompressed = compressed
+      }
 
 {- | Update a CRC-32 with one chunk.
 
@@ -178,6 +236,25 @@ crc32Chunk crc chunk =
 -- | zlib's incremental CRC-32, used to build the single gzip trailer.
 foreign import ccall unsafe "crc32"
   c_crc32 :: CULong -> Ptr Word8 -> CUInt -> IO CULong
+
+{- | The CRC-32 of two concatenated sequences, given each sequence's CRC-32 and
+the second sequence's length.
+
+Workers hash their block as they compress it, so the trailer is assembled from
+per-block values instead of hashing the whole input again on the conductor
+thread.
+-}
+crc32Combine :: Word32 -> Word32 -> Int -> IO Word32
+crc32Combine first second secondLength =
+  fromIntegral
+    <$> c_crc32_combine
+      (fromIntegral first)
+      (fromIntegral second)
+      (fromIntegral secondLength)
+
+-- | zlib's @crc32_combine@ for two concatenated sequences.
+foreign import ccall unsafe "crc32_combine"
+  c_crc32_combine :: CULong -> CULong -> CLong -> IO CULong
 
 -- | The fixed 10-byte gzip header: no name, no modification time, unknown OS.
 gzipHeader :: ByteString

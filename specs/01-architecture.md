@@ -150,6 +150,8 @@ ungzipConduit :: ConduitT ByteString ByteString (ResourceT IO) ()
 -- parallelGzipConduit compresses 1 MiB blocks concurrently and stitches the
 -- raw deflate segments into one standard gzip stream (one header and trailer).
 -- The output is a single-member gzip stream, not concatenated members.
+-- Reading is pipelined with compression through a bounded window of blocks
+-- (see specs/03 §7.3), so the input is read while workers compress.
 
 countBytes :: IORef Int64 -> ConduitT ByteString ByteString (ResourceT IO) ()
 -- Increments the ref for every chunk and passes the chunk through unchanged.

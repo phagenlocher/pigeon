@@ -31,6 +31,12 @@
   four times and improves decompressed download throughput. Stored blobs,
   headers, and the password form are unchanged.
 
+* Block-parallel gzip now reads the next 1 MiB block while earlier blocks are
+  still being compressed, instead of alternating between reading and
+  compressing a batch. Identity uploads and client-compressed uploads no longer
+  stall at a read/compress barrier, which raises upload throughput without
+  changing the stored single-member gzip format.
+
 ## 0.1.2.0 -- 2026-11-15
 
 * Gzip uploads are now validated as exactly one complete gzip member. A stream
