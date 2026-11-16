@@ -41,7 +41,7 @@ import Data.Conduit (ConduitT)
 import Control.Monad.Trans.Resource (ResourceT)
 import qualified Data.ByteString as BS
 
-import Pigeon.Types (FileId, FileInfo, Health)
+import Pigeon.Types (CreatedToken, FileId, FileInfo, Health, OwnerId, TokenInfo)
 
 type UploadBody = ConduitT () BS.ByteString (ResourceT IO) ()
 
@@ -60,6 +60,19 @@ type PigeonAPI =
          :> Get '[JSON] [FileInfo]
 
   :<|> "api" :> "v1" :> "files" :> Capture "id" FileId
+         :> Header "Authorization" Text
+         :> DeleteNoContent
+
+  :<|> "api" :> "v1" :> "tokens"
+         :> Header "Authorization" Text
+         :> QueryParam "expires_in" Int64
+         :> PostCreated '[JSON] CreatedToken
+
+  :<|> "api" :> "v1" :> "tokens"
+         :> Header "Authorization" Text
+         :> Get '[JSON] [TokenInfo]
+
+  :<|> "api" :> "v1" :> "tokens" :> Capture "id" OwnerId
          :> Header "Authorization" Text
          :> DeleteNoContent
 
@@ -89,10 +102,14 @@ webHandler :: AppEnv -> FileId -> Application
 
 - **NET-010** Every `/api/v1` endpoint requires `Authorization: Bearer <token>`.
 - **NET-011** The scheme name is case-insensitive; exactly one ASCII space separates it from the token.
-- **NET-012** The token is compared byte-for-byte with a constant-time comparison.
-- **NET-013** Missing, malformed, or incorrect credentials return `401` with `WWW-Authenticate: Bearer realm="pigeon"` and the standard API error body.
+- **NET-012** The presented token is compared with the configured admin token, or with a stored user-token digest, using a constant-time comparison.
+- **NET-013** Missing, malformed, expired, deleted, or incorrect credentials return `401` with `WWW-Authenticate: Bearer realm="pigeon"` and the standard API error body.
 - **NET-014** `/healthz`, `/f/:id`, and `/robots.txt` do not require authentication.
 - **NET-015** The token is never accepted from a query parameter or cookie.
+- **NET-016** The admin token authenticates as the admin and may use every endpoint.
+- **NET-017** A user token authenticates as its owner and may upload, list its own files, and delete its own files.
+- **NET-018** A valid user token calling a token-management endpoint returns `403 forbidden`.
+- **NET-019** User-token ownership is enforced on list and delete. Another owner's file is reported as `404 not_found`.
 
 ## 4. Endpoints
 
@@ -129,8 +146,8 @@ Semantics:
   - Both client and server may compress independent blocks in parallel. The result is always a **single gzip member** with one header and one trailer, not concatenated members, so every gzip decoder can read it. Compression is an internal implementation detail; the contract remains `Content-Encoding: gzip`.
 - **NET-024** Invalid gzip data returns `400 invalid_request` and removes the temp file. A member that ends before its trailer (a truncated upload) and bytes after the member (including a second member) are invalid.
 - **NET-025** If `max_upload_size > 0`, the server enforces it against both received bytes and decompressed original bytes. Exceeding it returns `413 payload_too_large` and removes the temp file.
-- **NET-026** The final blob is `data/files/<id>.gz`; metadata is committed only after the temp file has been renamed.
-- **NET-027** The response is `201 Created` with a `FileInfo` object.
+- **NET-026** The final blob is `data/files/<owner-id>/<id>.gz`; metadata is committed only after the temp file has been renamed.
+- **NET-027** The response is `201 Created` with a `FileInfo` object. Its `owner` is the admin owner or the calling user-token ID.
 - **NET-028** The `url` field is absolute, built from the server's configured public URL and the file ID.
 - **NET-029** A malformed `X-Pigeon-Password` (invalid base64url, empty decoded value, or more than 1024 decoded bytes) returns `400 invalid_request`.
 - **NET-030** Passwords are byte-exact UTF-8; no trimming, case folding, or Unicode normalization is performed.
@@ -147,6 +164,7 @@ Response body:
 ```json
 {
   "id": "7q3m9x2k4v8p1c6d",
+  "owner": "7q3m9x2k4v8p1c6d",
   "filename": "report.pdf",
   "size": 12345678,
   "createdAt": "2026-10-31T10:00:00Z",
@@ -165,6 +183,8 @@ List live files.
 - **NET-033** Results are ordered by `created_at DESC, id ASC`.
 - **NET-034** The response is `200` with a JSON array of `FileInfo`. An empty result is `[]`.
 - **NET-035** `size` is the original uncompressed size. The compressed size is not exposed in v1.
+- **NET-035a** A user token sees only files whose `owner` equals its token ID. The admin sees every live file.
+- **NET-035b** `owner` is the owning token ID, or `admin` for files uploaded with the admin token.
 
 ### 4.3 `DELETE /api/v1/files/{id}`
 
@@ -174,6 +194,8 @@ Delete a file.
 - **NET-037** A valid, existing ID returns `204 No Content`.
 - **NET-038** An existing but already-expired row may be deleted and returns `204`.
 - **NET-039** An unknown ID returns `404 not_found`.
+- **NET-039a** A user token may delete only a file it owns. A file owned by another token returns `404 not_found`.
+- **NET-039b** The admin may delete any file.
 - **NET-040** A malformed ID returns `400 invalid_request` on the API. The browser route treats malformed IDs as `404`.
 - **NET-041** The metadata row is removed in a committed transaction before the blob is unlinked. If unlink fails, the response is still `204`; the orphan is cleaned later.
 - **NET-042** The response has no body and `Cache-Control: no-store`.
@@ -210,7 +232,41 @@ Password form submission.
 - **NET-067** The password value is never logged, reflected in HTML, or placed in a URL.
 - **NET-068** POST responses set `Cache-Control: no-store`.
 
-### 4.7 `GET /robots.txt`
+### 4.7 User token endpoints
+
+All token endpoints require the admin token.
+
+#### 4.7.1 `POST /api/v1/tokens`
+
+- **NET-140** `expires_in` is optional. When present it MUST be an integer in `1 .. max_expiry_seconds`; otherwise `400 invalid_request`.
+- **NET-141** When `expires_in` is absent, the token does not expire and `expiresAt` is `null`.
+- **NET-142** The response is `201 Created`:
+  ```json
+  {
+    "id": "7q3m9x2k4v8p1c6d",
+    "token": "pgn_7q3m9x2k4v8p1c6d_...",
+    "createdAt": "2026-11-16T10:00:00Z",
+    "expiresAt": "2027-11-16T10:00:00Z"
+  }
+  ```
+- **NET-143** The plaintext `token` is returned exactly once. Only a SHA-256 digest is stored.
+- **NET-144** The token format is `pgn_<16-character owner id>_<43-character unpadded base64url secret>`.
+- **NET-145** The owner directory `files/<owner-id>/` is created before the response is returned.
+
+#### 4.7.2 `GET /api/v1/tokens`
+
+- **NET-146** Returns live user tokens, ordered by `created_at DESC, id ASC`.
+- **NET-147** Each object contains `id`, `createdAt`, and `expiresAt`. It never contains `token` or a hash.
+- **NET-148** The admin token is not listed.
+
+#### 4.7.3 `DELETE /api/v1/tokens/{id}`
+
+- **NET-149** Deletes the user token and every file it owns in one committed transaction, then unlinks the blobs and removes the owner directory. Returns `204`.
+- **NET-150** An unknown ID returns `404 not_found`; a malformed ID returns `400 invalid_request`.
+- **NET-151** The literal ID `admin` returns `400 invalid_request`; the admin token cannot be deleted.
+- **NET-152** A user token calling this endpoint returns `403 forbidden`.
+
+### 4.8 `GET /robots.txt`
 
 - **NET-069** Returns `text/plain; charset=utf-8` with:
   ```
@@ -286,8 +342,9 @@ Codes:
 | HTTP | `code` | When |
 | --- | --- | --- |
 | 400 | `invalid_request` | Bad query value, bad gzip, malformed password header, malformed ID, bad form field |
-| 401 | `unauthorized` | Missing/invalid bearer token; wrong file password on POST |
-| 404 | `not_found` | Unknown, deleted, or expired file |
+| 401 | `unauthorized` | Missing, invalid, expired, or deleted bearer token; wrong file password on POST |
+| 403 | `forbidden` | A valid user token called a token-management endpoint |
+| 404 | `not_found` | Unknown, deleted, or expired file or token; another owner's file |
 | 405 | `method_not_allowed` | Unsupported method on `/f/{id}` |
 | 406 | `not_acceptable` | No acceptable response encoding |
 | 413 | `payload_too_large` | Upload or form exceeds a limit |
@@ -350,13 +407,37 @@ curl -sS -X DELETE \
   https://files.example.com/api/v1/files/7q3m9x2k4v8p1c6d
 ```
 
-### 8.6 Download
+### 8.6 Create a user token
+
+```bash
+curl -sS -X POST \
+  -H "Authorization: Bearer $PIGEON_ADMIN_TOKEN" \
+  "https://files.example.com/api/v1/tokens?expires_in=2592000"
+```
+
+### 8.7 List user tokens
+
+```bash
+curl -sS \
+  -H "Authorization: Bearer $PIGEON_ADMIN_TOKEN" \
+  https://files.example.com/api/v1/tokens
+```
+
+### 8.8 Delete a user token and its files
+
+```bash
+curl -sS -X DELETE \
+  -H "Authorization: Bearer $PIGEON_ADMIN_TOKEN" \
+  https://files.example.com/api/v1/tokens/7q3m9x2k4v8p1c6d
+```
+
+### 8.9 Download
 
 ```bash
 curl -sS -OJ https://files.example.com/f/7q3m9x2k4v8p1c6d
 ```
 
-### 8.7 Password-protected download
+### 8.10 Password-protected download
 
 ```bash
 curl -sS -OJ \
@@ -364,7 +445,7 @@ curl -sS -OJ \
   https://files.example.com/f/7q3m9x2k4v8p1c6d
 ```
 
-### 8.8 Health
+### 8.11 Health
 
 ```bash
 curl -sS https://files.example.com/healthz
@@ -403,3 +484,8 @@ X-Pigeon-Password: Y29ycmVjdCBob3JzZSBiYXR0ZXJ5IHN0YXBsZQ
 - **NET-A08** A deleted or expired file returns `404` on both the API delete and the public URL.
 - **NET-A09** `HEAD /f/{id}` returns the same headers as `GET` and no body.
 - **NET-A10** `Content-Disposition` contains both an ASCII fallback and RFC 5987 `filename*` for Unicode names.
+- **NET-A11** An admin-created token works for upload, list, and delete; a second user token cannot see or delete the first token's files.
+- **NET-A12** The admin list contains every live file with its `owner`; a user list contains only its own.
+- **NET-A13** Deleting or expiring a user token removes all its files and blobs, and their URLs return `404`.
+- **NET-A14** `DELETE /api/v1/tokens/admin` returns `400` and the admin token continues to work.
+- **NET-A15** A user token calling a token endpoint returns `403`.

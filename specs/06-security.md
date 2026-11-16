@@ -6,13 +6,14 @@ Related: `02-network-api.md`, `03-storage.md`, `04-server.md`, `05-client.md`
 
 ## 1. Security model
 
-Pigeon has three trust boundaries:
+Pigeon has four trust boundaries:
 
-1. **Uploader → server.** Protected by a shared bearer token over TLS.
-2. **Web visitor → server.** Public downloads are protected by unguessable IDs; optionally by a per-file password.
-3. **Server → filesystem.** Blobs and metadata are only accessible to the server's OS user.
+1. **Admin → server.** Protected by the configured admin token over TLS. The admin can manage user tokens and every file.
+2. **User → server.** Protected by a user token over TLS. A user token can manage only the files it owns.
+3. **Web visitor → server.** Public downloads are protected by unguessable IDs; optionally by a per-file password.
+4. **Server → filesystem.** Blobs and metadata are only accessible to the server's OS user.
 
-Pigeon is not a multi-tenant service. A valid upload token grants full control over the metadata API. File passwords gate downloads only; they are not upload credentials and do not encrypt the blob.
+Pigeon is not a general multi-tenant service. Token ownership separates users' management operations, but a file URL is still a capability: anyone who has a live `/f/<id>` URL can download the file unless a file password is set. File passwords gate downloads only; they are not upload credentials and do not encrypt the blob.
 
 ## 2. What Pigeon does and does not protect
 
@@ -20,23 +21,37 @@ Pigeon is not a multi-tenant service. A valid upload token grants full control o
 - **SEC-002** The per-file password prevents casual download without the password. It does not encrypt the file at rest.
 - **SEC-003** gzip is compression, not encryption. The server and anyone with filesystem access can read every blob.
 - **SEC-004** At-rest confidentiality is the operator's responsibility (disk encryption, restricted filesystem access, backups).
-- **SEC-005** There is no protection against an attacker who has the upload token and server access; that is full compromise.
+- **SEC-005** There is no protection against an attacker who has the admin token and server access; that is full compromise.
+- **SEC-005a** A stolen user token grants control of that token's files and the ability to create more, but not access to another user's management operations.
 - **SEC-006** There is no antivirus, content moderation, or safe-preview mode. Downloads are always attachments.
 
-## 3. Bearer token
+## 3. Bearer tokens
 
-- **SEC-010** The token is a shared secret, at least 16 and at most 512 printable ASCII characters, with no whitespace.
-- **SEC-011** The server refuses to start without a token.
-- **SEC-012** The token is compared with `Data.ByteArray.constEq` over the UTF-8 bytes. Do not use `==` on `Text` or `String`.
+### 3.1 Admin token
+
+- **SEC-010** The admin token is a shared secret, at least 16 and at most 512 printable ASCII characters, with no whitespace.
+- **SEC-011** The server refuses to start without an admin token.
+- **SEC-012** The admin token is compared with `Data.ByteArray.constEq` over the UTF-8 bytes. Do not use `==` on `Text` or `String`.
 - **SEC-013** The `Authorization` scheme is parsed case-insensitively; the token itself is case-sensitive.
-- **SEC-014** The token is accepted only from the `Authorization: Bearer ...` header. It is never read from a query parameter, cookie, or form field.
-- **SEC-015** The token is never logged, stored in the database, included in error messages, or echoed in HTML.
-- **SEC-016** The server wraps the token in a `Secret` newtype whose `Show` prints `<redacted>`.
-- **SEC-017** The client accepts the token from `--token`, `--token-file`, `PIGEON_TOKEN`, or the `token`/`token-file` keys of its TOML config file (`05-client.md` §3.5). Production deployments should prefer `--token-file`, the config file, or the environment to avoid process-list exposure.
+- **SEC-014** Tokens are accepted only from the `Authorization: Bearer ...` header. They are never read from a query parameter, cookie, or form field.
+- **SEC-015** The admin token is never logged, stored in the database, included in error messages, or echoed in HTML.
+- **SEC-016** The server wraps the admin token in a `Secret` newtype whose `Show` prints `<redacted>`.
+- **SEC-017** The client accepts a token from `--token`, `--token-file`, `PIGEON_TOKEN`, or the `token`/`token-file` keys of its TOML config file (`05-client.md` §3.5). Production deployments should prefer `--token-file`, the config file, or the environment to avoid process-list exposure.
 - **SEC-018** `--token-file` must be readable only by the service user; the server does not enforce file permissions, but operators should use `0600`. The same applies to a client config file that stores `token` inline. Config file errors never echo token values (CLI-048).
-- **SEC-019** Token rotation is performed by restarting the server with a new token. There is no multi-token or grace-period support in v1.
-- **SEC-020** The client refuses to follow HTTP redirects, so the token cannot be forwarded to another host.
+- **SEC-019** Admin-token rotation is performed by restarting the server with a new token. User tokens can be created and deleted without a restart.
+- **SEC-020** The client refuses to follow HTTP redirects, so a token cannot be forwarded to another host.
 - **SEC-021** The client warns when it sends a token over plain HTTP. The warning is printed even with `--quiet`.
+
+### 3.2 User tokens
+
+- **SEC-022** A user token is `pgn_<owner-id>_<secret>`, where the secret is 32 bytes from `Crypto.Random.getRandomBytes` encoded as unpadded base64url.
+- **SEC-023** Only the SHA-256 digest of the complete token is stored. The plaintext token is returned only in the creation response.
+- **SEC-024** The owner ID is public and may appear in responses, logs, and directory names. The secret half must never appear in any of those.
+- **SEC-025** Authentication looks up the owner ID, rejects an expired or unknown token, and compares the SHA-256 digests with `Data.ByteArray.constEq`.
+- **SEC-026** An expired or deleted user token returns `401`. The same response is used for unknown and malformed tokens.
+- **SEC-027** Token creation, listing, and deletion require the admin token. A user token receives `403 forbidden`.
+- **SEC-028** Deleting or expiring a user token deletes every file it owns. This is intentional and documented.
+- **SEC-029** The admin token cannot be deleted through the token API; the literal owner id `admin` is rejected.
 
 ## 4. File passwords
 
@@ -228,7 +243,9 @@ X-Robots-Tag: noindex, nofollow
 
 ## 10. Residual risks
 
-- **SEC-120** A valid upload token grants full control: upload, list, and delete. There is no per-user authorization.
+- **SEC-120** The admin token grants full control: upload, list, delete, and token management. A stolen admin token is full compromise.
+- **SEC-120a** User tokens isolate management operations, not downloads. Anyone with a live file URL can download an unprotected file.
+- **SEC-120b** A token digest in the database cannot be used to authenticate, but a database reader can still read files and metadata.
 - **SEC-121** Anyone with a file URL can download an unprotected file. IDs are unguessable but are not access control once shared.
 - **SEC-122** Password-protected links can be brute-forced if the password is weak and no external rate limit exists.
 - **SEC-123** PBKDF2-HMAC-SHA512 is not memory-hard; without rate limiting, weak passwords remain vulnerable to offline GPU cracking.
@@ -254,3 +271,8 @@ X-Robots-Tag: noindex, nofollow
 - **SEC-A12** The password form includes the documented CSP and frame/referrer headers.
 - **SEC-A13** The client refuses redirects and prints a plaintext-HTTP warning.
 - **SEC-A14** Changing PBKDF2 parameters does not break existing hashes; the algorithm and iteration count are carried in the stored hash text, and old hashes still verify.
+- **SEC-A15** The database contains only SHA-256 digests of user tokens, never the plaintext token.
+- **SEC-A16** A user token cannot list or delete another user's files.
+- **SEC-A17** A user token calling a token-management endpoint returns `403`.
+- **SEC-A18** Token secrets and hashes never appear in logs, error responses, or HTML.
+- **SEC-A19** The admin token cannot be deleted through the API.

@@ -8,18 +8,19 @@ Related: `01-architecture.md`, `02-network-api.md`, `03-storage.md`, `04-server.
 
 Pigeon is a self-hosted file-publishing service. An authenticated terminal client uploads a file; the server stores it compressed and publishes it at an unguessable URL. A browser can download it until it expires. Optionally, the download is protected by a per-file password.
 
-Pigeon is intentionally small. It replaces ad-hoc file sharing with a predictable, auditable service: one server, one shared upload token, expiring links, optional download passwords, and no web management surface.
+Pigeon is intentionally small. It replaces ad-hoc file sharing with a predictable, auditable service: one server, an admin token, independently expiring user tokens, expiring links, optional download passwords, and no web management surface.
 
 ## 2. Actors
 
 | Actor | Capability |
 | --- | --- |
-| Operator | Runs `pigeon-server`, configures TLS, token, data directory, expiry policy. Has filesystem access to the data directory. |
-| Uploader | Runs `pigeon-client` with the shared token. Can upload, list, and delete files. |
+| Operator | Runs `pigeon-server`, configures TLS, the admin token, data directory, expiry policy. Has filesystem access to the data directory. |
+| Admin | Uses the configured admin token. Can upload, list all files, delete any file, and create, list, and delete user tokens. |
+| User | Uses a user token. Can upload, list, and delete only the files owned by that token. |
 | Web visitor | Uses a normal browser or HTTP client to download a file from `/f/:id`. May need to enter a password. |
-| Sweeper | Internal server component that deletes expired rows and blobs. Not an external actor. |
+| Sweeper | Internal server component that deletes expired rows, expired tokens, and blobs. Not an external actor. |
 
-There are no user accounts, no per-user ownership, and no roles. Anyone with the upload token has full control of the metadata API.
+There are no user accounts, browser sessions, or roles beyond admin and user tokens. A user token never grants access to another user's files.
 
 ## 3. Product requirements
 
@@ -63,7 +64,19 @@ There are no user accounts, no per-user ownership, and no roles. Anyone with the
 - **OV-024** The server MUST periodically delete expired metadata rows and their blobs.
 - **OV-025** The server MUST reconcile orphan blobs and metadata rows with missing blobs without deleting recent in-flight uploads.
 
-### 3.6 Operations
+### 3.6 User tokens
+
+- **OV-032** The admin token MUST be able to create user tokens.
+- **OV-033** A user token MAY have an expiry time. If the expiry is omitted, the token does not expire.
+- **OV-034** A user token MUST be able to upload files, list only its own live files, and delete only its own files.
+- **OV-035** The admin MUST be able to list every live file, with the owning token ID, and delete any file.
+- **OV-036** The admin MUST be able to list user tokens and delete a user token.
+- **OV-037** Deleting or expiring a user token MUST delete every file owned by that token and remove their blobs.
+- **OV-038** The admin token MUST NOT be deletable through the token API.
+- **OV-039** User tokens MUST be stored as one-way digests; the plaintext token is returned only when it is created.
+- **OV-040** There is no web UI for token management. Tokens are managed with the HTTP API and `pigeon-client`.
+
+### 3.7 Operations
 
 - **OV-026** TLS MUST be enabled by default.
 - **OV-027** Plain HTTP MUST require an explicit `--no-tls` opt-out for development.
@@ -76,12 +89,13 @@ There are no user accounts, no per-user ownership, and no roles. Anyone with the
 
 ### 4.1 Upload with default expiry
 
-1. Uploader runs `pigeon-client upload report.pdf`.
-2. Client reads the file as a stream, optionally gzip-compresses it, and sends it to `POST /api/v1/files`.
-3. Client omits `expires_in`.
-4. Server applies `--default-expiry` (default `7d`), streams the body to a temp file, stores a gzip blob, then starts the lifetime when storage completes and inserts metadata.
-5. Server returns `201` with `FileInfo`, including the absolute public URL and the computed `expiresAt`.
-6. Client prints the URL.
+1. The admin creates a user token with `pigeon-client --token "$ADMIN" token create`, or the uploader already has one.
+2. User runs `pigeon-client upload report.pdf` with that user token.
+3. Client reads the file as a stream, optionally gzip-compresses it, and sends it to `POST /api/v1/files`.
+4. Client omits `expires_in`.
+5. Server applies `--default-expiry` (default `7d`), streams the body to a temp file, stores a gzip blob under the caller's owner directory, then starts the lifetime when storage completes and inserts metadata.
+6. Server returns `201` with `FileInfo`, including the owner token ID, absolute public URL, and computed `expiresAt`.
+7. Client prints the URL.
 
 ### 4.2 Upload with password and explicit expiry
 
@@ -118,7 +132,7 @@ There are no user accounts, no per-user ownership, and no roles. Anyone with the
 The following are explicitly out of scope for v1. Do not implement them without a new specification.
 
 - **OV-N01** Web management UI, dashboard, upload form, or file browser.
-- **OV-N02** User accounts, roles, per-user ownership, or multiple upload tokens.
+- **OV-N02** User accounts, browser sessions, or roles beyond admin and user tokens. Per-user ownership is limited to token ownership and is specified in this document.
 - **OV-N03** Client-side download command.
 - **OV-N04** Range requests, resumable downloads, or multi-part uploads.
 - **OV-N05** Deduplication or content-addressed storage.
@@ -141,7 +155,9 @@ The following are explicitly out of scope for v1. Do not implement them without 
 | Expiry | Absolute UTC timestamp after which the file is no longer downloadable. |
 | Default expiry | Server policy applied when an upload omits `expires_in`. |
 | Maximum expiry | Server policy bounding any explicit `expires_in`. |
-| Upload token | Shared bearer token that authorizes the metadata API. |
+| Admin token | The configured bearer token that can manage user tokens and all files. |
+| User token | A bearer token that owns and manages only its own files. |
+| Owner | The admin or a user token that owns a file. |
 | File password | Optional per-file secret required before download. It is not the upload token. |
 | PBKDF2 | Password-based key-derivation function used to turn a file password into a stored hash. |
 | Sweeper | Background task that removes expired files and reconciles storage. |

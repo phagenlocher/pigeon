@@ -9,7 +9,7 @@ Related: `01-architecture.md`, `02-network-api.md`, `04-server.md`, `06-security
 - **STORE-001** Metadata lives in SQLite. Blobs live on the filesystem. No blob bytes are stored in SQLite.
 - **STORE-002** Every blob is gzip-compressed on disk.
 - **STORE-003** Every metadata row has a non-null `expires_at`.
-- **STORE-004** A blob path is derived only from a server-generated file ID. User filenames never become paths.
+- **STORE-004** A blob path is derived only from a server-generated file ID and a validated owner ID. User filenames and token secrets never become paths.
 - **STORE-005** Uploads are written to a temp file and atomically renamed into the blob directory only after the write succeeds.
 - **STORE-006** A metadata row is committed only after the final blob exists.
 - **STORE-007** Committed metadata must be durable in the main SQLite database file. WAL mode is explicitly not used.
@@ -22,8 +22,10 @@ Related: `01-architecture.md`, `02-network-api.md`, `04-server.md`, `06-security
 ├── pigeon.db                 SQLite database (rollback journal mode)
 ├── pigeon.db-journal         transient, only during a write transaction
 ├── files/
-│   ├── 7q3m9x2k4v8p1c6d.gz
-│   └── ...
+│   ├── admin/
+│   │   └── 7q3m9x2k4v8p1c6d.gz
+│   └── 7q3m9x2k4v8p1c6d/
+│       └── 8r4n0y3l5w9q2d7e.gz
 └── tmp/
     ├── 7q3m9x2k4v8p1c6d.a1b2c3d4.part
     └── ...
@@ -31,7 +33,7 @@ Related: `01-architecture.md`, `02-network-api.md`, `04-server.md`, `06-security
 
 - **STORE-010** `<data-dir>` defaults to `./data` but is configurable with `--data-dir`.
 - **STORE-011** The database path defaults to `<data-dir>/pigeon.db` and can be overridden with `--db`.
-- **STORE-012** Blob files are `<data-dir>/files/<id>.gz`.
+- **STORE-012** Blob files are `<data-dir>/files/<owner-id>/<id>.gz`. The admin owner directory is `files/admin/`; user owner directories use the token ID.
 - **STORE-013** Temp files are `<data-dir>/tmp/<id>.<random>.part`.
 - **STORE-014** `files/` and `tmp/` MUST be on the same filesystem. At startup, compare their device IDs; refuse to start if they differ.
 - **STORE-015** The server creates `<data-dir>`, `files/`, and `tmp/` with mode `0700` where the platform supports it.
@@ -67,14 +69,32 @@ WAL improves concurrent read/write throughput, but a commit can remain in `pigeo
 ## 4. Schema
 
 ```sql
+CREATE TABLE IF NOT EXISTS tokens (
+    id         TEXT    PRIMARY KEY NOT NULL,
+    kind       TEXT    NOT NULL CHECK (kind IN ('admin', 'user')),
+    token_hash BLOB,
+    created_at INTEGER NOT NULL,
+    expires_at INTEGER,
+    CHECK (
+        (kind = 'admin' AND id = 'admin' AND token_hash IS NULL AND expires_at IS NULL)
+        OR
+        (kind = 'user' AND token_hash IS NOT NULL)
+    ),
+    CHECK (expires_at IS NULL OR expires_at > created_at)
+);
+
+INSERT OR IGNORE INTO tokens (id, kind, token_hash, created_at, expires_at)
+VALUES ('admin', 'admin', NULL, 0, NULL);
+
 CREATE TABLE IF NOT EXISTS files (
-    id           TEXT    PRIMARY KEY NOT NULL,
-    filename     TEXT    NOT NULL,
+    id            TEXT    PRIMARY KEY NOT NULL,
+    owner_id      TEXT    NOT NULL REFERENCES tokens (id) ON DELETE RESTRICT,
+    filename      TEXT    NOT NULL,
     size_original INTEGER NOT NULL CHECK (size_original >= 0),
-    size_stored  INTEGER NOT NULL CHECK (size_stored >= 0),
+    size_stored   INTEGER NOT NULL CHECK (size_stored >= 0),
     password_hash TEXT,
-    created_at   INTEGER NOT NULL,
-    expires_at   INTEGER NOT NULL,
+    created_at    INTEGER NOT NULL,
+    expires_at    INTEGER NOT NULL,
     CHECK (expires_at > created_at),
     CHECK (password_hash IS NULL OR length(password_hash) > 0)
 );
@@ -85,10 +105,16 @@ CREATE INDEX IF NOT EXISTS idx_files_expires_at
 CREATE INDEX IF NOT EXISTS idx_files_created_at
     ON files (created_at DESC);
 
+CREATE INDEX IF NOT EXISTS idx_files_owner_expires
+    ON files (owner_id, expires_at);
+
 PRAGMA user_version = 1;
 ```
 
 - **STORE-030** `id` is the 16-character lowercase Crockford base32 ID. It is the primary key.
+- **STORE-030a** `owner_id` references `tokens.id`. It is the admin sentinel `admin` or a 16-character user-token ID.
+- **STORE-030b** `tokens.token_hash` is a SHA-256 digest of the complete user token. The plaintext token is never stored.
+- **STORE-030c** `tokens.kind = 'admin'` is a single reserved row for admin-owned files. It has no token hash and never expires.
 - **STORE-031** `filename` is the sanitized display name, stored as UTF-8 text.
 - **STORE-033** `size_original` is the uncompressed byte length. It is at least 0.
 - **STORE-034** `size_stored` is the gzip blob length. It is at least 0.
@@ -136,7 +162,8 @@ sha512:25000:YWJjZGVmZ2hpamtsbW5vcA==:JRElYYrOMe9OIV4LDxaLTgO9ho8fFBVofXoQcdngi7
 
 ```haskell
 data StoreRequest = StoreRequest
-  { srFilename        :: Text
+  { srOwnerId         :: OwnerId
+  , srFilename        :: Text
   , srLifetime        :: Int64           -- seconds, measured from completion
   , srPasswordHash    :: Maybe Text       -- encoded PBKDF2 hash text, or Nothing
   , srContentEncoding :: Maybe ByteString -- Nothing / "identity" / "gzip"
@@ -167,8 +194,8 @@ data StoreRequest = StoreRequest
    - After the body ends, `size_stored` is the temp file size.
 5. **STORE-064** Flush and close the temp handle.
 6. **STORE-065** `fsync` the temp file with `fileSynchronise`. Failure aborts the upload, removes the temp file, and commits no metadata row. The descriptor is closed on both success and failure; a close error must never mask the synchronization error.
-7. **STORE-066** Atomically rename the temp file to `files/<id>.gz`.
-8. **STORE-067** `fsync` the `files/` directory before inserting metadata. If opening or synchronizing the directory fails with any ordinary I/O error, remove the renamed blob, do not insert, and return a storage error. Only an error that explicitly means the platform does not support directory fsync (`EINVAL`/`EOPNOTSUPP`, surfaced as `InvalidArgument`/`UnsupportedOperation`) takes the documented exception path: log one warning per process and continue with the documented reduced crash durability. Do not treat every `IOException` as unsupported. If the post-rename cleanup itself fails, log the orphan blob ID for later reconciliation and still do not insert a row.
+7. **STORE-066** Ensure `files/<owner-id>/` exists with mode `0700`, then atomically rename the temp file to `files/<owner-id>/<id>.gz`.
+8. **STORE-067** `fsync` the owner directory and `files/` before inserting metadata. If opening or synchronizing the directory fails with any ordinary I/O error, remove the renamed blob, do not insert, and return a storage error. Only an error that explicitly means the platform does not support directory fsync (`EINVAL`/`EOPNOTSUPP`, surfaced as `InvalidArgument`/`UnsupportedOperation`) takes the documented exception path: log one warning per process and continue with the documented reduced crash durability. Do not treat every `IOException` as unsupported. If the post-rename cleanup itself fails, log the orphan blob ID for later reconciliation and still do not insert a row.
 9. **STORE-068** Once the body has been stored, record `created_at` from the server clock, compute `expires_at = created_at + srLifetime`, and insert the metadata row in a `BEGIN IMMEDIATE` transaction and commit.
 10. **STORE-069** Return the `StoredFile` with `size_original`, `size_stored`, and the final path.
 
@@ -209,7 +236,7 @@ For identity uploads the server compresses at rest. `parallelGzipConduit` splits
 
 1. **STORE-090** Look up the row by ID. If absent, return `not_found`.
 2. **STORE-091** Delete the row in a `BEGIN IMMEDIATE` transaction and commit.
-3. **STORE-092** Unlink `files/<id>.gz` outside the database lock.
+3. **STORE-092** Unlink `files/<owner-id>/<id>.gz` outside the database lock.
 4. **STORE-093** If unlink fails because the file is missing, treat it as success.
 5. **STORE-094** If unlink fails for another reason, log a warning and return success; the orphan sweeper retries.
 6. **STORE-095** An in-flight download on POSIX keeps its open handle and may finish after the unlink. New requests get `404`.
@@ -217,6 +244,13 @@ For identity uploads the server compresses at rest. `parallelGzipConduit` splits
 ### 9.2 Expiry delete
 
 The sweeper follows the same order: commit row deletion first, then unlink blobs.
+
+### 9.3 Token deletion
+
+- **STORE-096** Deleting a user token selects its file IDs, deletes the file rows and the token row in one `BEGIN IMMEDIATE` transaction, then unlinks the blobs outside the lock.
+- **STORE-097** After unlinking, the owner directory is removed when empty. A non-empty or otherwise undeletable directory is left for the sweeper.
+- **STORE-098** The admin token cannot be deleted. Such a request is rejected before any transaction.
+- **STORE-099** An upload that races a token deletion fails the foreign-key check; the renamed blob is removed and no row is committed.
 
 ## 10. Expiry and sweeper
 
@@ -231,16 +265,19 @@ The sweeper follows the same order: commit row deletion first, then unlink blobs
   5. Logs the number of rows and blobs removed, plus unlink failures.
 - **STORE-104** A sweeper exception is logged and does not terminate the process. The next interval retries.
 - **STORE-105** Download and list handlers independently treat `expires_at <= now` as gone, regardless of sweeper state.
+- **STORE-105a** Each sweep also selects user tokens with `expires_at <= now`, deletes their token row and all their file rows in one transaction, then unlinks the blobs and removes the owner directory.
+- **STORE-105b** A deleted or expired user token cannot authenticate, upload, list, or delete files, even before the sweeper removes its row.
+- **STORE-105c** The admin token row has no expiry and is never selected by the token sweep.
 
 ### 10.1 Orphan reconciliation
 
 - **STORE-110** At startup, remove temp files older than 24 hours.
-- **STORE-111** At startup, list `files/*.gz`, parse IDs from filenames, and remove blobs that have no metadata row and whose mtime is older than 1 hour.
+- **STORE-111** At startup, list `files/<owner-id>/*.gz`, parse owner and file IDs, and remove blobs that have no metadata row and whose mtime is older than 1 hour.
 - **STORE-112** At startup, delete metadata rows whose blob is missing. Log each removed ID.
 - **STORE-113** During normal sweeps, remove old orphan blobs with the same 1-hour grace period.
 - **STORE-114** During normal sweeps, remove temp files older than 24 hours.
 - **STORE-115** The grace period prevents deleting a blob that was renamed just before its metadata insert, and prevents deleting a temp file from a long-running upload.
-- **STORE-116** Orphan cleanup must never delete a blob whose ID is present in the database, even if the row is expired; expiry deletion is handled by the expiry path.
+- **STORE-116** Orphan cleanup must never delete a blob whose `(owner_id, id)` pair is present in the database, even if the row is expired; expiry deletion is handled by the expiry path.
 
 ## 11. Consistency guarantees
 
@@ -300,17 +337,26 @@ storeUpload :: Storage -> Db -> StoreRequest -> IO (Either StorageError StoredFi
 insertFile     :: Db -> StoredFile -> IO ()
 lookupFile     :: Db -> FileId -> IO (Maybe StoredFile)
 listLiveFiles  :: Db -> UTCTime -> IO [StoredFile]
+listLiveFilesForOwner :: Db -> OwnerId -> UTCTime -> IO [StoredFile]
 deleteFileRow  :: Db -> FileId -> IO Bool
-expiredIds     :: Db -> UTCTime -> IO [FileId]
-allIds         :: Db -> IO (Set FileId)
-deleteRowsMissingBlob :: Db -> (FileId -> IO Bool) -> IO [FileId]
+deleteFileRowOwnedBy :: Db -> OwnerId -> FileId -> IO Bool
+expiredIds     :: Db -> UTCTime -> IO [(OwnerId, FileId)]
+allIds         :: Db -> IO (Set (OwnerId, FileId))
+deleteRowsMissingBlob :: Db -> ((OwnerId, FileId) -> IO Bool) -> IO [(OwnerId, FileId)]
+
+insertToken    :: Db -> StoredToken -> IO ()
+lookupToken    :: Db -> OwnerId -> IO (Maybe StoredToken)
+listLiveUserTokens :: Db -> UTCTime -> IO [TokenInfo]
+deleteTokenAndFiles :: Db -> OwnerId -> IO (Maybe [FileId])
+expiredUserTokens :: Db -> UTCTime -> IO [OwnerId]
 ```
 
 - **STORE-130** All functions take the `MVar` internally for the shortest possible time.
 - **STORE-131** `listLiveFiles` filters `expires_at > now` in SQL, not in Haskell.
 - **STORE-132** `deleteFileRow` returns `True` if a row was deleted.
 - **STORE-133** Database rows are mapped to `StoredFile` without exposing `password_hash` in API responses.
-- **STORE-134** `migrate` is idempotent. It reads `PRAGMA user_version`; version 0 creates the schema and sets 1; a version greater than 1 is a startup error.
+- **STORE-134** `migrate` is idempotent. It reads `PRAGMA user_version`; version 0 creates the complete schema including tokens and owner-scoped files, then sets 1. Version 1 is accepted only when the `tokens` table and `files.owner_id` exist; otherwise startup fails with a clear message to recreate the data directory. There is no migration from the pre-token development schema, and `user_version` stays 1.
+- **STORE-134a** Version 2 or greater is a startup error.
 
 ## 13. Backup and inspection
 
@@ -333,3 +379,7 @@ deleteRowsMissingBlob :: Db -> (FileId -> IO Bool) -> IO [FileId]
 - **STORE-A10** A blob whose row is missing is not served; a row whose blob is missing returns `404` and is logged.
 - **STORE-A11** `files/` and `tmp/` on different filesystems cause startup to fail with a clear error.
 - **STORE-A12** Data directories and blobs have restrictive permissions on POSIX.
+- **STORE-A13** Every blob is stored under `files/<owner-id>/`; no blob is stored directly under `files/`.
+- **STORE-A14** Deleting a user token removes its token row, file rows, blobs, and owner directory.
+- **STORE-A15** The sweeper removes expired user tokens and all their files.
+- **STORE-A16** A pre-token version-1 database is rejected without changing `user_version` or modifying data.
