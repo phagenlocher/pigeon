@@ -6,7 +6,8 @@ against a real Warp server on an ephemeral port.
 -}
 module Main (main) where
 
-import Control.Exception.Safe (SomeException, bracket_, throwIO, try)
+import Control.Concurrent (threadDelay)
+import Control.Exception.Safe (IOException, SomeException, bracket_, throwIO, try)
 import Control.Monad (void)
 import Data.Aeson (decode, encode)
 import Data.Bits ((.&.))
@@ -25,7 +26,7 @@ import Data.Text qualified as T
 import Data.Text.Encoding (encodeUtf8)
 import Data.Time (addUTCTime, diffUTCTime, getCurrentTime)
 import Data.Word (Word8)
-import Database.SQLite.Simple (Only (..), query_)
+import Database.SQLite.Simple (Only (..), execute_, query_)
 import Network.HTTP.Client (responseHeaders)
 import Network.HTTP.Types (Header, hContentType, statusCode)
 import Servant.API (FromHttpApiData (parseUrlPiece), ToHttpApiData (toUrlPiece))
@@ -34,7 +35,6 @@ import System.Directory (
   doesDirectoryExist,
   doesFileExist,
   getHomeDirectory,
-  listDirectory,
   removeFile,
  )
 import System.Environment (setEnv, unsetEnv)
@@ -73,6 +73,7 @@ import Pigeon.Client.Output (
   estimateEta,
   formatEta,
   formatRate,
+  formatTokenTable,
   formatUploadUrl,
   progressLineVisible,
   transferRate,
@@ -80,6 +81,7 @@ import Pigeon.Client.Output (
 import Pigeon.Config (normalizeBaseUrl, parseEnvBool)
 import Pigeon.Duration
 import Pigeon.Password
+import Pigeon.Server.App (runApp)
 import Pigeon.Server.Config (
   ServerConfig (..),
   TlsMode (..),
@@ -87,10 +89,12 @@ import Pigeon.Server.Config (
   isWildcardHost,
  )
 import Pigeon.Server.Db
+import Pigeon.Server.Env (AppEnv (..))
 import Pigeon.Server.Storage
-import Pigeon.Server.Sweeper (SweepCounts (..), sweepShouldLog)
+import Pigeon.Server.Sweeper (SweepCounts (..), sweepOnce, sweepShouldLog)
 import Pigeon.Server.Web (streamFileBody)
 import Pigeon.Streaming
+import Pigeon.Token
 import Pigeon.Types
 import Support
 
@@ -368,6 +372,7 @@ main = hspec $ do
           info =
             FileInfo
               { fiId = FileId "0000000000000000",
+                fiOwner = adminOwnerId,
                 fiFilename = "report.pdf",
                 fiSize = 12,
                 fiCreatedAt = epochToUtc 0,
@@ -376,6 +381,19 @@ main = hspec $ do
                 fiUrl = "https://files.example.com/f/0000000000000000"
               }
       formatUploadUrl info `shouldBe` "https://files.example.com/f/0000000000000000\n"
+
+  describe "token output" $ do
+    let now = epochToUtc 1761955200
+        token =
+          TokenInfo
+            { tiId = OwnerId "0000000000000000",
+              tiCreatedAt = now,
+              tiExpiresAt = Just (addUTCTime 3600 now)
+            }
+    it "renders a token table and an empty result" $ do
+      formatTokenTable now [] `shouldBe` "No tokens.\n"
+      formatTokenTable now [token] `shouldSatisfy` T.isInfixOf "0000000000000000"
+      formatTokenTable now [token] `shouldSatisfy` T.isInfixOf "CREATED (UTC)"
 
   describe "filename sanitisation" $ do
     it "removes path separators and control characters" $ do
@@ -439,6 +457,23 @@ main = hspec $ do
       let fid = FileId "000g40r40m30e209"
       decode (encode fid) `shouldBe` Just fid
       parseUrlPiece (toUrlPiece fid) `shouldBe` Right fid
+
+  describe "user tokens" $ do
+    it "round-trips a generated token and stores a 32-byte digest" $ do
+      owner <- generateOwnerId
+      (raw, digest) <- generateUserToken owner
+      parseToken raw `shouldBe` Just (ParsedToken owner digest)
+      BS.length digest `shouldBe` 32
+      raw `shouldSatisfy` T.isPrefixOf tokenPrefix
+    it "rejects malformed user tokens" $ do
+      parseToken (tokenPrefix <> "short") `shouldBe` Nothing
+      parseToken "Bearer pgn_0000000000000000_short" `shouldBe` Nothing
+      parseToken "" `shouldBe` Nothing
+    it "accepts the admin sentinel and generated owner ids" $ do
+      isValidOwnerId adminOwnerId `shouldBe` True
+      owner <- generateOwnerId
+      isValidOwnerId owner `shouldBe` True
+      isValidOwnerId (OwnerId "../etc") `shouldBe` False
 
   describe "PBKDF2 password hashing" $ do
     let fixtureHash :: Text
@@ -574,6 +609,7 @@ main = hspec $ do
           info =
             FileInfo
               { fiId = FileId "7q3m9x2k4v8p1c6d",
+                fiOwner = adminOwnerId,
                 fiFilename = "report.pdf",
                 fiSize = 123,
                 fiCreatedAt = now,
@@ -602,6 +638,31 @@ main = hspec $ do
       sync `shouldBe` [Only 2]
       version `shouldBe` [Only 1]
       closeDb db
+    it "stores blobs under the owner directory and lists owner pairs" $ withTempDataDir $ \dir -> do
+      storage <- initStorage defaultStorageHooks dir
+      db <- openDb (dir </> "pigeon.db")
+      migrate db
+      owner <- generateOwnerId
+      now <- getCurrentTime
+      insertToken db (StoredToken owner (BS.replicate 32 0) now Nothing)
+      ensureOwnerDir storage owner
+      stored <-
+        storeUpload storage db ((storeRequest Nothing "payload"){srOwnerId = owner})
+          >>= either (fail . show) pure
+      sfOwnerId stored `shouldBe` owner
+      doesFileExist (blobPath storage owner (sfId stored)) `shouldReturn` True
+      listBlobIds storage `shouldReturn` [(owner, sfId stored)]
+      closeDb db
+    it "rejects a version-1 database from before user tokens" $ withTempDataDir $ \dir -> do
+      db <- openDb (dir </> "pigeon.db")
+      _ <- withConn db $ \c -> do
+        execute_
+          c
+          "CREATE TABLE IF NOT EXISTS files (id TEXT PRIMARY KEY NOT NULL, filename TEXT NOT NULL, size_original INTEGER NOT NULL, size_stored INTEGER NOT NULL, password_hash TEXT, created_at INTEGER NOT NULL, expires_at INTEGER NOT NULL)"
+        execute_ c "PRAGMA user_version = 1"
+      result <- try (migrate db) :: IO (Either IOException ())
+      result `shouldSatisfy` isLeft
+      closeDb db
     it "stores identity uploads as gzip and round-trips them" $ withTempDataDir $ \dir -> do
       storage <- initStorage defaultStorageHooks dir
       db <- openDb (dir </> "pigeon.db")
@@ -609,7 +670,8 @@ main = hspec $ do
       let payload = BS.concat (replicate 100 "random-ish bytes")
           request =
             StoreRequest
-              { srFilename = "data.bin",
+              { srOwnerId = adminOwnerId,
+                srFilename = "data.bin",
                 srLifetime = 3600,
                 srPasswordHash = Nothing,
                 srContentEncoding = Nothing,
@@ -618,7 +680,7 @@ main = hspec $ do
               }
       stored <- storeUpload storage db request >>= either (fail . show) pure
       sfSize stored `shouldBe` fromIntegral (BS.length payload)
-      blob <- BS.readFile (blobPath storage (sfId stored))
+      blob <- BS.readFile (blobPath storage (sfOwnerId stored) (sfId stored))
       raw <- runConduitRes (yield blob .| ungzip .| sinkList)
       BS.concat raw `shouldBe` payload
       doesFileExist (dir </> "pigeon.db-wal") `shouldReturn` False
@@ -634,7 +696,7 @@ main = hspec $ do
           >>= either (fail . show) pure
       sfSize stored `shouldBe` fromIntegral (BS.length payload)
       sfStoredSize stored `shouldBe` fromIntegral (BS.length encoded)
-      blob <- BS.readFile (blobPath storage (sfId stored))
+      blob <- BS.readFile (blobPath storage (sfOwnerId stored) (sfId stored))
       blob `shouldBe` encoded
       closeDb db
     it "rejects gzip followed by trailing bytes" $ withTempDataDir $ \dir -> do
@@ -698,7 +760,7 @@ main = hspec $ do
         storeUpload storage db (storeRequest (Just "gzip") compressed)
           >>= either (fail . show) pure
       sfSize stored `shouldBe` 0
-      blob <- BS.readFile (blobPath storage (sfId stored))
+      blob <- BS.readFile (blobPath storage (sfOwnerId stored) (sfId stored))
       blob `shouldBe` compressed
       closeDb db
     it "stores a multi-block identity upload as one gzip stream" $ withTempDataDir $ \dir -> do
@@ -710,7 +772,7 @@ main = hspec $ do
         storeUpload storage db (storeRequest Nothing payload)
           >>= either (fail . show) pure
       sfSize stored `shouldBe` fromIntegral (BS.length payload)
-      blob <- BS.readFile (blobPath storage (sfId stored))
+      blob <- BS.readFile (blobPath storage (sfOwnerId stored) (sfId stored))
       BS.take 2 blob `shouldBe` BS.pack [0x1f, 0x8b]
       raw <- runConduitRes (yield blob .| ungzip .| sinkList)
       BS.concat raw `shouldBe` payload
@@ -723,7 +785,7 @@ main = hspec $ do
         storeUpload storage db (storeRequest Nothing BS.empty)
           >>= either (fail . show) pure
       sfSize stored `shouldBe` 0
-      blob <- BS.readFile (blobPath storage (sfId stored))
+      blob <- BS.readFile (blobPath storage (sfOwnerId stored) (sfId stored))
       BS.length blob `shouldSatisfy` (> 0)
       raw <- runConduitRes (yield blob .| ungzip .| sinkList)
       BS.concat raw `shouldBe` BS.empty
@@ -736,7 +798,8 @@ main = hspec $ do
       let request :: StoreRequest
           request =
             StoreRequest
-              { srFilename = "bad.gz",
+              { srOwnerId = adminOwnerId,
+                srFilename = "bad.gz",
                 srLifetime = 3600,
                 srPasswordHash = Nothing,
                 srContentEncoding = Just "gzip",
@@ -756,7 +819,8 @@ main = hspec $ do
       let request :: StoreRequest
           request =
             StoreRequest
-              { srFilename = "big",
+              { srOwnerId = adminOwnerId,
+                srFilename = "big",
                 srLifetime = 3600,
                 srPasswordHash = Nothing,
                 srContentEncoding = Nothing,
@@ -778,7 +842,8 @@ main = hspec $ do
       let request :: StoreRequest
           request =
             StoreRequest
-              { srFilename = "bomb.gz",
+              { srOwnerId = adminOwnerId,
+                srFilename = "bomb.gz",
                 srLifetime = 3600,
                 srPasswordHash = Nothing,
                 srContentEncoding = Just "gzip",
@@ -807,7 +872,7 @@ main = hspec $ do
         result <- storeUpload storage db (storeRequest Nothing "payload")
         result `shouldSatisfy` isLeft
         listLiveFiles db now `shouldReturn` []
-        listDirectory (dir </> "files") `shouldReturn` []
+        listBlobIds storage `shouldReturn` []
         listTempFiles storage `shouldReturn` []
         recorded <- readIORef messages
         recorded `shouldSatisfy` any (T.isInfixOf "fsync failed")
@@ -826,7 +891,7 @@ main = hspec $ do
         result <- storeUpload storage db (storeRequest Nothing "payload")
         result `shouldSatisfy` isLeft
         listLiveFiles db now `shouldReturn` []
-        listDirectory (dir </> "files") `shouldReturn` []
+        listBlobIds storage `shouldReturn` []
         listTempFiles storage `shouldReturn` []
         closeDb db
     it "continues and warns once when directory fsync is unsupported" $
@@ -845,7 +910,7 @@ main = hspec $ do
         second <- storeUpload storage db (storeRequest Nothing "two")
         first `shouldSatisfy` isRight
         second `shouldSatisfy` isRight
-        length <$> listDirectory (dir </> "files") `shouldReturn` 2
+        length <$> listBlobIds storage `shouldReturn` 2
         length <$> readIORef warnings `shouldReturn` 1
         closeDb db
     it "logs an orphan and inserts no row when post-rename cleanup fails" $
@@ -865,7 +930,7 @@ main = hspec $ do
         result <- storeUpload storage db (storeRequest Nothing "payload")
         result `shouldSatisfy` isLeft
         listLiveFiles db now `shouldReturn` []
-        length <$> listDirectory (dir </> "files") `shouldReturn` 1
+        length <$> listBlobIds storage `shouldReturn` 1
         recorded <- readIORef warnings
         recorded `shouldSatisfy` any (T.isInfixOf "orphan")
         closeDb db
@@ -879,24 +944,26 @@ main = hspec $ do
         storeUpload storage db (storeRequest Nothing "payload")
           >>= either (fail . show) pure
       let fileId = sfId stored
-      deleted <- deleteFileRows db [fileId, FileId "0000000000000000"]
-      deleted `shouldBe` [fileId]
+      deleted <- deleteFileRows db [(adminOwnerId, fileId), (adminOwnerId, FileId "0000000000000000")]
+      deleted `shouldBe` [(adminOwnerId, fileId)]
       allFiles db `shouldReturn` []
       closeDb db
 
   describe "sweeper logging" $ do
     let idle :: SweepCounts
-        idle = SweepCounts 0 0 0
+        idle = SweepCounts 0 0 0 0
     it "stays silent on an idle sweep" $
       sweepShouldLog False idle `shouldBe` False
     it "logs an idle sweep when verbose" $
       sweepShouldLog True idle `shouldBe` True
     it "logs a sweep that removed expired rows" $
-      sweepShouldLog False (SweepCounts 1 0 0) `shouldBe` True
+      sweepShouldLog False (SweepCounts 1 0 0 0) `shouldBe` True
     it "logs a sweep that removed orphan blobs" $
-      sweepShouldLog False (SweepCounts 0 1 0) `shouldBe` True
+      sweepShouldLog False (SweepCounts 0 0 1 0) `shouldBe` True
+    it "logs a sweep that removed expired tokens" $
+      sweepShouldLog False (SweepCounts 0 1 0 0) `shouldBe` True
     it "logs a sweep that removed temp files" $
-      sweepShouldLog False (SweepCounts 0 0 1) `shouldBe` True
+      sweepShouldLog False (SweepCounts 0 0 0 1) `shouldBe` True
 
   describe "path safety" $ do
     it "creates private storage directories" $ withTempDataDir $ \dir -> do
@@ -1021,6 +1088,85 @@ main = hspec $ do
       client <- testClientEnv port
       files <- listFiles client
       files `shouldBe` []
+    it "creates and lists user tokens without repeating the secret" $ withTestServer $ \_ port -> do
+      client <- testClientEnv port
+      created <- createToken client Nothing
+      ctExpiresAt created `shouldBe` Nothing
+      listed <- listTokensWith client testToken
+      map tiId listed `shouldBe` [ctId created]
+      listFilesWith client (secretText (ctToken created)) `shouldReturn` []
+    it "isolates files between user tokens and lets the admin see them" $ withTestServer $ \_ port -> do
+      client <- testClientEnv port
+      createdA <- createToken client Nothing
+      createdB <- createToken client Nothing
+      let tokenA = secretText (ctToken createdA)
+          tokenB = secretText (ctToken createdB)
+      infoA <- uploadWithToken client tokenA "a.txt" "alpha"
+      infoB <- uploadWithToken client tokenB "b.txt" "bravo"
+      fiOwner infoA `shouldBe` ctId createdA
+      fiOwner infoB `shouldBe` ctId createdB
+      map fiId <$> listFilesWith client tokenA `shouldReturn` [fiId infoA]
+      map fiId <$> listFilesWith client tokenB `shouldReturn` [fiId infoB]
+      adminFiles <- listFiles client
+      let adminIds = map fiId adminFiles
+          adminOwners = map fiOwner adminFiles
+      adminIds `shouldSatisfy` \ids -> fiId infoA `elem` ids && fiId infoB `elem` ids
+      adminOwners `shouldSatisfy` \owners -> ctId createdA `elem` owners && ctId createdB `elem` owners
+    it "prevents a user token from deleting another owner's file" $ withTestServer $ \_ port -> do
+      client <- testClientEnv port
+      createdA <- createToken client Nothing
+      createdB <- createToken client Nothing
+      info <- uploadWithToken client (secretText (ctToken createdA)) "a.txt" "alpha"
+      deleteFileResultWith client (secretText (ctToken createdB)) (fiId info)
+        `shouldReturn` Left 404
+      deleteFileResultWith client (secretText (ctToken createdA)) (fiId info)
+        `shouldReturn` Right ()
+      gone <- download port (fiId info) []
+      statusCode (statusOf gone) `shouldBe` 404
+    it "lets the admin delete any user's file" $ withTestServer $ \_ port -> do
+      client <- testClientEnv port
+      created <- createToken client Nothing
+      info <- uploadWithToken client (secretText (ctToken created)) "a.txt" "alpha"
+      deleteFile client (fiId info)
+      listFiles client `shouldReturn` []
+    it "forbids user tokens from calling token endpoints" $ withTestServer $ \_ port -> do
+      client <- testClientEnv port
+      created <- createToken client Nothing
+      listTokensResultWith client (secretText (ctToken created)) `shouldReturn` Left 403
+    it "refuses to delete the admin token" $ withTestServer $ \_ port -> do
+      response <-
+        requestWith
+          port
+          "/api/v1/tokens/admin"
+          "DELETE"
+          [("Authorization", encodeUtf8 authHeader)]
+          BS.empty
+      statusCode (statusOf response) `shouldBe` 400
+    it "deletes a token's files immediately" $ withTestServer $ \_ port -> do
+      client <- testClientEnv port
+      created <- createToken client Nothing
+      info <- uploadWithToken client (secretText (ctToken created)) "a.txt" "alpha"
+      deleteTokenWith client testToken (ctId created)
+      gone <- download port (fiId info) []
+      statusCode (statusOf gone) `shouldBe` 404
+      listTokensWith client testToken `shouldReturn` []
+      listFiles client `shouldReturn` []
+    it "rejects an expired user token" $ withTestServer $ \_ port -> do
+      client <- testClientEnv port
+      created <- createToken client (Just 1)
+      threadDelay 1100000
+      listFilesResultWith client (secretText (ctToken created)) `shouldReturn` Left 401
+    it "expires user tokens and deletes their files on sweep" $ withRawServer $ \env port -> do
+      client <- testClientEnv port
+      created <- createToken client (Just 1)
+      info <- uploadWithToken client (secretText (ctToken created)) "a.txt" "alpha"
+      threadDelay 1100000
+      result <- runApp env sweepOnce
+      result `shouldSatisfy` isRight
+      gone <- download port (fiId info) []
+      statusCode (statusOf gone) `shouldBe` 404
+      doesDirectoryExist (ownerDir (aeStorage env) (ctId created)) `shouldReturn` False
+      listTokensWith client testToken `shouldReturn` []
     it "uploads, lists, downloads, and deletes" $ withTestServer $ \_ port -> do
       client <- testClientEnv port
       info <- uploadRaw client "hello.txt" "hello pigeon"
@@ -1248,7 +1394,8 @@ gzipBytes bytes = BS.concat <$> runConduitRes (yield bytes .| gzip .| sinkList)
 storeRequest :: Maybe BS.ByteString -> BS.ByteString -> StoreRequest
 storeRequest encoding body =
   StoreRequest
-    { srFilename = "data.bin",
+    { srOwnerId = adminOwnerId,
+      srFilename = "data.bin",
       srLifetime = 3600,
       srPasswordHash = Nothing,
       srContentEncoding = encoding,

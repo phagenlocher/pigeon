@@ -1,5 +1,24 @@
 # Revision history for pigeon
 
+## Unreleased
+
+* Added user tokens. The configured `--token` is now the admin token; the admin
+  can create, list, and delete user tokens with `pigeon-client token` or the
+  `/api/v1/tokens` endpoints. User tokens can upload, list, and delete only
+  their own files, and the admin list shows each file's owning token
+  (OV-032…OV-040, NET-140…NET-152, CLI-160…CLI-168).
+
+* User tokens have an optional expiry. Deleting or expiring a token deletes all
+  files it owns, including their blobs and URLs.
+
+* Blobs are now stored per owner under `data/files/<owner-id>/<file-id>.gz`
+  instead of directly under `data/files/`. The schema remains at
+  `user_version = 1`; there is no migration, so an existing development data
+  directory must be recreated (STORE-A13).
+
+* Existing admin uploads now carry `owner: "admin"` in `FileInfo`; user uploads
+  carry their token ID.
+
 ## 0.1.2.0 -- 2026-11-15
 
 * Gzip uploads are now validated as exactly one complete gzip member. A stream

@@ -167,7 +167,9 @@ serveFile stored request isHead =
     NotAcceptable -> pure (htmlError status406 "No acceptable response encoding.")
     encoding -> do
       env <- ask
-      opened <- liftIO (try (openBlob (aeStorage env) (sfId stored))) :: App (Either IOException Handle)
+      opened <-
+        liftIO (try (openBlob (aeStorage env) (sfOwnerId stored) (sfId stored))) ::
+          App (Either IOException Handle)
       case opened of
         Left _ -> do
           logWarn ("blob missing for id=" <> unFileId (sfId stored))

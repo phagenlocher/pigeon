@@ -8,6 +8,7 @@ module Pigeon.Client.Output (
   progressLineVisible,
   formatUploadUrl,
   formatFileTable,
+  formatTokenTable,
   truncateName,
   deleteResultJson,
 ) where
@@ -20,7 +21,7 @@ import Data.Time (UTCTime, diffUTCTime)
 import Data.Time.Format qualified as Time
 
 import Pigeon.Duration (humanizeRemaining)
-import Pigeon.Types (FileId (..), FileInfo (..))
+import Pigeon.Types (FileId (..), FileInfo (..), OwnerId (..), TokenInfo (..))
 
 -- | Format bytes using binary units and one decimal place.
 formatSize :: Int64 -> Text
@@ -133,6 +134,8 @@ formatFileTable now files =
   header =
     padRight 16 "ID"
       <> "  "
+      <> padRight 16 "OWNER"
+      <> "  "
       <> padRight 40 "NAME"
       <> "  "
       <> padLeft 9 "SIZE"
@@ -147,6 +150,8 @@ formatFileTable now files =
   renderRow FileInfo{..} =
     padRight 16 (showFileId fiId)
       <> "  "
+      <> padRight 16 (unOwnerId fiOwner)
+      <> "  "
       <> padRight 40 (truncateName fiFilename)
       <> "  "
       <> padLeft 9 (formatSize fiSize)
@@ -156,6 +161,35 @@ formatFileTable now files =
       <> padRight 8 (remainingUntil now fiExpiresAt)
       <> "  "
       <> (if fiHasPassword then "yes" else "no")
+
+-- | Human-readable token table. Preserves the input order.
+formatTokenTable :: UTCTime -> [TokenInfo] -> Text
+formatTokenTable _now [] = "No tokens.\n"
+formatTokenTable now tokens =
+  T.unlines (header : map renderRow tokens)
+ where
+  header :: Text
+  header =
+    padRight 16 "ID"
+      <> "  "
+      <> padRight 19 "CREATED (UTC)"
+      <> "  "
+      <> padRight 19 "EXPIRES (UTC)"
+      <> "  "
+      <> "LEFT"
+
+  renderRow :: TokenInfo -> Text
+  renderRow TokenInfo{..} =
+    padRight 16 (unOwnerId tiId)
+      <> "  "
+      <> padRight 19 (formatTimeUtc tiCreatedAt)
+      <> "  "
+      <> padRight 19 (maybe "never" formatTimeUtc tiExpiresAt)
+      <> "  "
+      <> maybe "never" (remainingUntil now) tiExpiresAt
+
+formatTimeUtc :: UTCTime -> Text
+formatTimeUtc = T.pack . Time.formatTime Time.defaultTimeLocale "%Y-%m-%d %H:%M:%S"
 
 -- | Remaining time until @expiresAt@, clamped at zero and humanized.
 remainingUntil :: UTCTime -> UTCTime -> Text

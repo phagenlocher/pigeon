@@ -8,14 +8,25 @@ module Pigeon.Types (
   generateFileId,
   fileIdPattern,
 
+  -- * Owner identifiers
+  OwnerId (..),
+  adminOwnerId,
+  isValidOwnerId,
+  isAdminOwner,
+  ownerIdPattern,
+  generateOwnerId,
+
   -- * API-facing types
   FileInfo (..),
+  TokenInfo (..),
+  CreatedToken (..),
   Health (..),
   ApiError (..),
   ApiErrorEnvelope (..),
 
   -- * Storage-facing types
   StoredFile (..),
+  StoredToken (..),
 
   -- * Secrets
   Secret (..),
@@ -126,15 +137,82 @@ instance ToHttpApiData FileId where
 instance FromHttpApiData FileId where
   parseUrlPiece = Right . FileId
 
+{- | The identity that owns a file: either the configured admin token or a
+user token. User owner ids use the same 16-character Crockford base32 alphabet
+as file ids; the admin owner is the reserved literal @admin@.
+-}
+newtype OwnerId = OwnerId {unOwnerId :: Text}
+  deriving (Eq, Ord, Show)
+
+-- | The owner of files uploaded with the configured admin token.
+adminOwnerId :: OwnerId
+adminOwnerId = OwnerId "admin"
+
+-- | Human-readable description of a valid user owner id.
+ownerIdPattern :: Text
+ownerIdPattern = "^[0-9a-hjkmnp-tv-z]{16}$"
+
+-- | Check that an owner id is the admin sentinel or sixteen Crockford characters.
+isValidOwnerId :: OwnerId -> Bool
+isValidOwnerId owner = isAdminOwner owner || isUserOwnerId owner
+
+-- | Whether an owner id is the reserved admin sentinel.
+isAdminOwner :: OwnerId -> Bool
+isAdminOwner (OwnerId t)
+  | t == "admin" = True
+  | otherwise = False
+
+-- | Whether an owner id is a generated user token id.
+isUserOwnerId :: OwnerId -> Bool
+isUserOwnerId (OwnerId t) =
+  t /= "admin" && T.length t == 16 && T.all (`T.elem` fileIdAlphabet) t
+
+-- | Generate a fresh user owner id with the same entropy as a file id.
+generateOwnerId :: IO OwnerId
+generateOwnerId = do
+  FileId raw <- generateFileId
+  pure (OwnerId raw)
+
+instance ToJSON OwnerId where
+  toJSON = String . unOwnerId
+
+instance FromJSON OwnerId where
+  parseJSON = withText "OwnerId" (pure . OwnerId)
+
+instance ToHttpApiData OwnerId where
+  toUrlPiece = unOwnerId
+
+-- | Lenient so the API can report a malformed token id as @400@.
+instance FromHttpApiData OwnerId where
+  parseUrlPiece = Right . OwnerId
+
 -- | Public metadata for a stored file.
 data FileInfo = FileInfo
   { fiId :: FileId,
+    fiOwner :: OwnerId,
     fiFilename :: Text,
     fiSize :: Int64,
     fiCreatedAt :: UTCTime,
     fiExpiresAt :: UTCTime,
     fiHasPassword :: Bool,
     fiUrl :: Text
+  }
+  deriving (Eq, Show)
+
+-- | Public metadata for a user token. Never includes the token or its hash.
+data TokenInfo = TokenInfo
+  { tiId :: OwnerId,
+    tiCreatedAt :: UTCTime,
+    tiExpiresAt :: Maybe UTCTime
+  }
+  deriving (Eq, Show)
+
+-- | The one-time response returned when a token is created.
+data CreatedToken = CreatedToken
+  { ctId :: OwnerId,
+    ctToken :: Secret,
+    ctCreatedAt :: UTCTime,
+    ctExpiresAt :: Maybe UTCTime
   }
   deriving (Eq, Show)
 
@@ -158,6 +236,7 @@ newtype ApiErrorEnvelope = ApiErrorEnvelope {unApiErrorEnvelope :: ApiError}
 -- | Internal stored-file record. Never serialized to clients.
 data StoredFile = StoredFile
   { sfId :: FileId,
+    sfOwnerId :: OwnerId,
     sfFilename :: Text,
     sfSize :: Int64,
     sfStoredSize :: Int64,
@@ -167,10 +246,20 @@ data StoredFile = StoredFile
   }
   deriving (Eq, Show)
 
+-- | Internal stored-token record. The hash is a SHA-256 digest.
+data StoredToken = StoredToken
+  { stId :: OwnerId,
+    stHash :: ByteString,
+    stCreatedAt :: UTCTime,
+    stExpiresAt :: Maybe UTCTime
+  }
+  deriving (Eq, Show)
+
 instance ToJSON FileInfo where
   toJSON FileInfo{..} =
     object
       [ "id" .= fiId,
+        "owner" .= fiOwner,
         "filename" .= fiFilename,
         "size" .= fiSize,
         "createdAt" .= formatTimestamp fiCreatedAt,
@@ -183,10 +272,11 @@ instance FromJSON FileInfo where
   parseJSON = withObject "FileInfo" $ \o -> do
     createdAtText <- o .: "createdAt"
     expiresAtText <- o .: "expiresAt"
-    createdAt <- parseTimestampField "createdAt" createdAtText
-    expiresAt <- parseTimestampField "expiresAt" expiresAtText
+    createdAt <- parseField "createdAt" createdAtText
+    expiresAt <- parseField "expiresAt" expiresAtText
     FileInfo
       <$> o .: "id"
+      <*> (o .:? "owner" .!= adminOwnerId)
       <*> o .: "filename"
       <*> o .: "size"
       <*> pure createdAt
@@ -194,9 +284,50 @@ instance FromJSON FileInfo where
       <*> o .: "hasPassword"
       <*> o .: "url"
    where
-    parseTimestampField :: Text -> Text -> Parser UTCTime
-    parseTimestampField name value =
+    parseField :: Text -> Text -> Parser UTCTime
+    parseField name value =
       maybe (fail ("invalid " <> T.unpack name <> " timestamp")) pure (parseTimestamp value)
+
+instance ToJSON TokenInfo where
+  toJSON TokenInfo{..} =
+    object
+      [ "id" .= tiId,
+        "createdAt" .= formatTimestamp tiCreatedAt,
+        "expiresAt" .= fmap formatTimestamp tiExpiresAt
+      ]
+
+instance FromJSON TokenInfo where
+  parseJSON = withObject "TokenInfo" $ \o -> do
+    createdAtText <- o .: "createdAt"
+    expiresAtText <- o .:? "expiresAt"
+    createdAt <- parseTimestampField "createdAt" createdAtText
+    expiresAt <- traverse (parseTimestampField "expiresAt") expiresAtText
+    TokenInfo <$> o .: "id" <*> pure createdAt <*> pure expiresAt
+
+instance ToJSON CreatedToken where
+  toJSON CreatedToken{..} =
+    object
+      [ "id" .= ctId,
+        "token" .= secretText ctToken,
+        "createdAt" .= formatTimestamp ctCreatedAt,
+        "expiresAt" .= fmap formatTimestamp ctExpiresAt
+      ]
+
+instance FromJSON CreatedToken where
+  parseJSON = withObject "CreatedToken" $ \o -> do
+    createdAtText <- o .: "createdAt"
+    expiresAtText <- o .:? "expiresAt"
+    createdAt <- parseTimestampField "createdAt" createdAtText
+    expiresAt <- traverse (parseTimestampField "expiresAt") expiresAtText
+    CreatedToken
+      <$> o .: "id"
+      <*> (mkSecret <$> o .: "token")
+      <*> pure createdAt
+      <*> pure expiresAt
+
+parseTimestampField :: Text -> Text -> Parser UTCTime
+parseTimestampField name value =
+  maybe (fail ("invalid " <> T.unpack name <> " timestamp")) pure (parseTimestamp value)
 
 instance ToJSON Health where
   toJSON Health{..} =

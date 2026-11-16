@@ -48,9 +48,12 @@ import Pigeon.Server.Config (ServerConfig (..), TlsMode (..))
 import Pigeon.Server.Db (closeDb, migrate, openDb)
 import Pigeon.Server.Env (AppEnv (..))
 import Pigeon.Server.Handlers (
+  createTokenHandler,
   deleteHandler,
+  deleteTokenHandler,
   healthHandler,
   listHandler,
+  listTokensHandler,
   uploadHandler,
  )
 import Pigeon.Server.Log qualified as Log
@@ -100,6 +103,9 @@ server env =
   ( uploadHandler
       :<|> listHandler
       :<|> deleteHandler
+      :<|> createTokenHandler
+      :<|> listTokensHandler
+      :<|> deleteTokenHandler
       :<|> healthHandler
   )
     :<|> ( Tagged . webHandler env
