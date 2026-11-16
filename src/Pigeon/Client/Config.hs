@@ -4,6 +4,7 @@ module Pigeon.Client.Config (
   ClientCommand (..),
   UploadOptions (..),
   DeleteOptions (..),
+  TokenCommand (..),
   PasswordSource (..),
   parseClientConfig,
   defaultClientConfig,
@@ -60,10 +61,18 @@ newtype DeleteOptions = DeleteOptions
   }
   deriving (Eq, Show)
 
+-- | Token-management subcommands.
+data TokenCommand
+  = TokenCreate (Maybe Int64)
+  | TokenList
+  | TokenDelete [Text]
+  deriving (Eq, Show)
+
 data ClientCommand
   = Upload UploadOptions
   | List
   | Delete DeleteOptions
+  | Token TokenCommand
   deriving (Eq, Show)
 
 -- | Fully resolved client configuration.
@@ -173,12 +182,37 @@ deleteParser =
   Delete . DeleteOptions
     <$> some (argument str (metavar "ID..." <> help "One or more file ids"))
 
+tokenParser :: Parser ClientCommand
+tokenParser =
+  Token
+    <$> hsubparser
+      ( command
+          "create"
+          ( info
+              ( TokenCreate
+                  <$> optional
+                    ( durationSecondsOption
+                        (long "expires-in" <> metavar "DURATION" <> help "Token lifetime; omitted means no expiry")
+                    )
+              )
+              (progDesc "Create a user token")
+          )
+          <> command "list" (info (pure TokenList) (progDesc "List live user tokens"))
+          <> command
+            "delete"
+            ( info
+                (TokenDelete <$> some (argument str (metavar "ID..." <> help "One or more token ids")))
+                (progDesc "Delete user tokens and their files")
+            )
+      )
+
 commandParser :: Parser ClientCommand
 commandParser =
   hsubparser
     ( command "upload" (info uploadParser (progDesc "Upload a file"))
         <> command "list" (info (pure List) (progDesc "List live files"))
         <> command "delete" (info deleteParser (progDesc "Delete files by id"))
+        <> command "token" (info tokenParser (progDesc "Manage user tokens"))
     )
 
 rawParser :: Parser RawClient
@@ -283,6 +317,15 @@ validateCommand = \case
   Delete options
     | null (doIds options) -> usage "error: delete requires at least one id"
     | otherwise -> pure (Delete options)
+  Token tokenCommand -> Token <$> validateToken tokenCommand
  where
+  validateToken :: TokenCommand -> IO TokenCommand
+  validateToken = \case
+    TokenCreate expires -> pure (TokenCreate expires)
+    TokenList -> pure TokenList
+    TokenDelete ids
+      | null ids -> usage "error: token delete requires at least one id"
+      | otherwise -> pure (TokenDelete ids)
+
   usage :: Text -> IO a
   usage = exitWithText 2
