@@ -20,6 +20,12 @@
 * Existing admin uploads now carry `owner: "admin"` in `FileInfo`; user uploads
   carry their token ID.
 
+* `pigeon-server` now uses a 4 MiB allocation area per capability instead of
+  16 MiB. Resident memory after startup at 50 000 stored files drops from about
+  474 MB to about 100 MB, with no measured effect on uploads or on inflate-bound
+  downloads. A stream that decompresses faster than the network can carry it
+  allocates enough to feel the smaller nursery; `+RTS -A16m` restores that case.
+
 ## 0.1.2.0 -- 2026-11-15
 
 * Gzip uploads are now validated as exactly one complete gzip member. A stream

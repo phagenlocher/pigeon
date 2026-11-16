@@ -128,13 +128,17 @@ executable pigeon-server
     base,
     pigeon,
 
-  -- Use every capability for concurrent gzip/TLS work and give each one a
-  -- 16 MiB allocation area to cut minor-GC frequency on streaming paths.
-  -- Operators can override with +RTS -Nn, e.g. in cgroup-limited containers.
+  -- Use every capability: gzip workers are capped at eight, but TLS and
+  -- request handling still spread across the machine. A 4 MiB allocation area
+  -- per capability is enough to feed the eight 1 MiB gzip blocks without GC
+  -- thrash, whereas 16 MiB multiplied by every capability kept hundreds of
+  -- megabytes resident for no throughput gain.
+  -- Operators can override with +RTS -Nn or +RTS -A16m, e.g. in
+  -- cgroup-limited containers.
   ghc-options:
     -threaded
     -rtsopts
-    "-with-rtsopts=-N -A16m"
+    "-with-rtsopts=-N -A4m"
 
 executable pigeon-client
   import: warnings, shared
