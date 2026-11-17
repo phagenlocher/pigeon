@@ -39,9 +39,12 @@ import Data.ByteString.Unsafe (unsafeUseAsCStringLen)
 import Data.Conduit
 import Data.Conduit.Combinators (chunksOfE)
 import Data.Conduit.Zlib (gzip)
+import Data.Foldable qualified as Foldable
 import Data.IORef
 import Data.Int (Int64)
 import Data.Maybe (fromMaybe, mapMaybe)
+import Data.Sequence (Seq)
+import Data.Sequence qualified as Seq
 import Data.Streaming.Zlib (
   Deflate,
   Inflate,
@@ -388,27 +391,29 @@ The inflater emits at most 32 KiB per chunk, so forwarding it directly costs a
 response-body write per 32 KiB. Buffering up to @target@ amortises that at a
 bounded cost: at most @target@ plus one input chunk is held per stream. A
 chunk that already meets the target is yielded without being copied, which
-keeps the gzip passthrough path at its read size.
+keeps the gzip passthrough path at its read size. Chunks are appended to a
+'Seq' so they stay in stream order without reversing them at emit time.
 -}
 coalesceChunks :: forall m. (Monad m) => Int -> ConduitT ByteString ByteString m ()
 coalesceChunks target
   | target <= 1 = passThrough
-  | otherwise = go 0 []
+  | otherwise = go 0 Seq.empty
  where
-  go :: Int -> [ByteString] -> ConduitT ByteString ByteString m ()
+  go :: Int -> Seq ByteString -> ConduitT ByteString ByteString m ()
   go pending chunks
-    | pending >= target = emit chunks >> go 0 []
+    | pending >= target = emit chunks >> go 0 Seq.empty
     | otherwise =
         await >>= \case
           Nothing -> emit chunks
           Just chunk
             | BS.null chunk -> go pending chunks
-            | otherwise -> go (pending + BS.length chunk) (chunk : chunks)
+            | otherwise -> go (pending + BS.length chunk) (chunks Seq.|> chunk)
 
-  emit :: [ByteString] -> ConduitT ByteString ByteString m ()
-  emit [] = pure ()
-  emit [chunk] = yield chunk
-  emit chunks = yield (BS.concat (reverse chunks))
+  emit :: Seq ByteString -> ConduitT ByteString ByteString m ()
+  emit chunks = case Foldable.toList chunks of
+    [] -> pure ()
+    [chunk] -> yield chunk
+    many -> yield (BS.concat many)
 
 {- | Stream a handle in chunks of up to @size@ bytes.
 
