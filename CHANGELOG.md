@@ -20,6 +20,23 @@
 * Existing admin uploads now carry `owner: "admin"` in `FileInfo`; user uploads
   carry their token ID.
 
+* `pigeon-server` now uses a 4 MiB allocation area per capability instead of
+  16 MiB. Resident memory after startup at 50 000 stored files drops from about
+  474 MB to about 100 MB, with no measured effect on uploads or on inflate-bound
+  downloads. A stream that decompresses faster than the network can carry it
+  allocates enough to feel the smaller nursery; `+RTS -A16m` restores that case.
+
+* Downloads are now written in response-body chunks of about 128 KiB instead of
+  about 32 KiB, which cuts the number of chunk writes and flushes by roughly
+  four times and improves decompressed download throughput. Stored blobs,
+  headers, and the password form are unchanged.
+
+* Block-parallel gzip now reads the next 1 MiB block while earlier blocks are
+  still being compressed, instead of alternating between reading and
+  compressing a batch. Identity uploads and client-compressed uploads no longer
+  stall at a read/compress barrier, which raises upload throughput without
+  changing the stored single-member gzip format.
+
 ## 0.1.2.0 -- 2026-11-15
 
 * Gzip uploads are now validated as exactly one complete gzip member. A stream

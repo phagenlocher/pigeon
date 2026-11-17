@@ -136,6 +136,11 @@ Why `ResourceT IO`:
 sourceHandleChunked :: Int -> Handle -> ConduitT i ByteString (ResourceT IO) ()
 -- Reads up to the given number of bytes per chunk from a Handle.
 
+coalesceChunks :: Int -> ConduitT ByteString ByteString m ()
+-- Buffers input until the pending bytes reach the given size, then emits one
+-- chunk. Every output chunk except the last holds at least that many bytes.
+-- A chunk that already meets the size is emitted without being copied.
+
 gzipConduit :: ConduitT ByteString ByteString (ResourceT IO) ()
 parallelGzipConduit :: ConduitT ByteString ByteString (ResourceT IO) ()
 ungzipConduit :: ConduitT ByteString ByteString (ResourceT IO) ()
@@ -145,6 +150,8 @@ ungzipConduit :: ConduitT ByteString ByteString (ResourceT IO) ()
 -- parallelGzipConduit compresses 1 MiB blocks concurrently and stitches the
 -- raw deflate segments into one standard gzip stream (one header and trailer).
 -- The output is a single-member gzip stream, not concatenated members.
+-- Reading is pipelined with compression through a bounded window of blocks
+-- (see specs/03 §7.3), so the input is read while workers compress.
 
 countBytes :: IORef Int64 -> ConduitT ByteString ByteString (ResourceT IO) ()
 -- Increments the ref for every chunk and passes the chunk through unchanged.
@@ -220,9 +227,13 @@ GET/HEAD /f/:id
   │                                      └ correct: continue
   ▼
 Accept-Encoding gzip?
-  ├─ yes ──▶ sourceFile files/<owner-id>/<id>.gz ──▶ responseStream (Content-Encoding: gzip)
-  └─ no  ──▶ sourceFile .| ungzipConduit ──▶ responseStream (identity)
+  ├─ yes ──▶ read .gz in 128 KiB chunks ──▶ responseStream (Content-Encoding: gzip)
+  └─ no  ──▶ read .gz .| ungzipConduit .| coalesceChunks 128 KiB ──▶ responseStream (identity)
 ```
+
+Response bodies are written and flushed in chunks of at least 64 KiB (128 KiB
+in practice), so a 256 MiB download costs thousands of response writes instead
+of tens of thousands (SRV-129).
 
 The file handle is opened only after the DB row is fetched and the lock is released. A concurrent delete may unlink the path; on POSIX, an already-open handle continues to stream. If the open fails because the blob is missing, return `404` and log the inconsistency.
 
@@ -236,7 +247,7 @@ The file handle is opened only after the DB row is fetched and the lock is relea
 - The sweeper is a single background thread. It performs a short delete transaction, then unlinks blobs outside the lock.
 - Request handlers never wait for the sweeper.
 - `MVar` contention is acceptable because the service is low-throughput and SQLite serializes writes anyway.
-- **ARCH-015** `pigeon-server` is linked with `-N -A16m`, so the threaded RTS uses every available capability and concurrent compression, decompression, and TLS work is not serialized on one core. `pigeon-client` is linked with `-N8 -A4m` and adjusts its capability count at runtime: compressed uploads keep up to eight block-parallel gzip workers (capped by the processor count), while identity uploads and the metadata commands use two capabilities. The 4 MiB allocation area is large enough for eight 1 MiB gzip workers without thrashing the nursery. A single upload uses up to eight capabilities for block-parallel gzip on the server; a single download remains one capability (gzip passthrough is I/O-bound, and identity responses decompress sequentially). Operators may override the defaults with `+RTS`, for example `+RTS -N2` in a CPU-quota-limited container, `+RTS -N1` to force single-stream compression, or `+RTS -A16m` for a larger nursery.
+- **ARCH-015** `pigeon-server` is linked with `-N -A4m`, so the threaded RTS uses every available capability and concurrent compression, decompression, and TLS work is not serialized on one core. The 4 MiB allocation area is enough to feed the eight 1 MiB block-parallel gzip workers without nursery thrash; a per-capability 16 MiB area was measured to add hundreds of megabytes of resident memory without changing throughput. `pigeon-client` is linked with `-N8 -A4m` and adjusts its capability count at runtime: compressed uploads keep up to eight block-parallel gzip workers (capped by the processor count), while identity uploads and the metadata commands use two capabilities. The 4 MiB allocation area is large enough for eight 1 MiB gzip workers without thrashing the nursery. A single upload uses up to eight capabilities for block-parallel gzip on the server; a single download remains one capability (gzip passthrough is I/O-bound, and identity responses decompress sequentially). Operators may override the defaults with `+RTS`, for example `+RTS -N2` in a CPU-quota-limited container, `+RTS -N1` to force single-stream compression, or `+RTS -A16m` for a larger nursery.
 
 ## 8. Server startup and shutdown order
 

@@ -300,10 +300,15 @@ webHandler env fid req respond = runApp env (handleRequest fid req) >>= respond
 ### 8.3 File streaming
 
 ```haskell
+-- Size used for both the stored-blob read and the coalesced response writes.
+downloadChunkSize :: Int
+downloadChunkSize = 128 * 1024
+
 responseStream status200 headers $ \send flush ->
   runResourceT $ runConduit $
-    sourceHandle handle
+    sourceHandleChunked downloadChunkSize handle
       .| (if gzipAccepted then id else ungzipConduit)
+      .| coalesceChunks downloadChunkSize
       .| mapM_C (\chunk -> liftIO (send chunk >> flush))
 ```
 
@@ -311,6 +316,7 @@ responseStream status200 headers $ \send flush ->
 - **SRV-121** Open the blob with `O_NOFOLLOW` after the DB lookup and after releasing the DB lock.
 - **SRV-122** Gzip passthrough sends `Content-Encoding: gzip` and no `Content-Length`; the response uses chunked transfer encoding. The compressed length is not advertised because browsers save the decompressed file and would report a wrong size and ETA.
 - **SRV-123** Identity sends no `Content-Length` and uses chunked transfer.
+- **SRV-129** Write the body in chunks of at least 64 KiB whenever that much data is available, and flush each chunk. The implementation reads the stored blob and coalesces decompressed output at 128 KiB. Smaller final chunks are allowed. This only reduces per-chunk framing and syscalls; SRV-122, SRV-123, and SRV-127 are unchanged.
 - **SRV-124** Always set `Vary: Accept-Encoding`.
 - **SRV-125** Always set `Content-Disposition: attachment` with ASCII fallback and RFC 5987 `filename*`.
 - **SRV-126** Always set `X-Content-Type-Options: nosniff`, `Cache-Control: no-store`, `Referrer-Policy: no-referrer`, `X-Robots-Tag: noindex, nofollow`, and `X-Frame-Options: DENY`.

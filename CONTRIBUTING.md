@@ -74,8 +74,8 @@ Run the checks described in [`AGENTS.md`](AGENTS.md):
 ```bash
 cabal build all
 cabal test all
-fourmolu --mode check src app test
-hlint src app test
+fourmolu --mode check src app test bench
+hlint src app test bench
 ```
 
 If behavior changed, update the relevant spec in `specs/` and `CHANGELOG.md` in

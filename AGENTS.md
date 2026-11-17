@@ -49,8 +49,19 @@ cabal run pigeon-client -- \
   upload ./some-file.bin --expires-in 7d
 
 # Formatting and linting
-fourmolu -i src app test
-hlint src app test
+fourmolu -i src app test bench
+hlint src app test bench
+
+# Benchmarks (release RTS profile, wall-clock timing)
+cabal bench
+cabal bench --benchmark-options="--timeout=5s"
+
+# Release-faithful benchmark numbers (-O2, like cabal.project.release)
+cabal bench --project-file=cabal.project.release \
+  --builddir=dist-newstyle-release
+
+# End-to-end upload/download benchmark over loopback
+bench/http.sh
 ```
 
 Production-style invocation:
@@ -99,6 +110,9 @@ src/Pigeon/
     Api.hs                  -- Servant client environment and error mapping
     Commands.hs             -- upload/list/delete implementations
     Output.hs               -- tables, JSON, progress, formatting
+bench/
+  Bench.hs                  -- tasty-bench suite for gzip and download streaming
+  http.sh                   -- end-to-end upload/download benchmark over loopback
 test/
   Spec.hs                   -- hspec entry point
   ...                       -- unit and integration tests
@@ -152,7 +166,7 @@ The server never buffers a whole file. Uploads and downloads use `ConduitT`/`Sou
 5. Update the spec if behavior or rationale changed.
 6. Update `CHANGELOG.md` for user-visible behavior changes; never for
    documentation, CI, build, or test-only changes.
-7. Run `cabal build all`, `cabal test all`, `fourmolu --mode check`, and `hlint`.
+7. Run `cabal build all`, `cabal test all`, `fourmolu --mode check src app test bench`, and `hlint src app test bench`.
 8. Confirm no secrets or file contents appear in logs or test output.
 
 ## Haskell conventions
@@ -208,7 +222,7 @@ A change is done when:
 - The relevant spec requirement is implemented.
 - Unit and integration tests cover the behavior.
 - `cabal build all` and `cabal test all` pass.
-- `fourmolu --mode check src app test` and `hlint src app test` are clean.
+- `fourmolu --mode check src app test bench` and `hlint src app test bench` are clean.
 - The spec and `CHANGELOG.md` are updated if behavior changed.
 - No secrets, passwords, tokens, or file contents are logged.
 - Streaming paths have been checked for accidental whole-file buffering.
