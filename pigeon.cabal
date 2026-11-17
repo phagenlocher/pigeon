@@ -120,25 +120,25 @@ library
   -- package's extra-libraries.
   extra-libraries: z
 
+-- Exact RTS profile of the release server: every capability so concurrent
+-- gzip/TLS work is not serialized, and a 4 MiB allocation area per capability,
+-- which feeds eight 1 MiB gzip blocks without GC thrash while keeping resident
+-- memory proportional to the capability count. Imported by the benchmark so
+-- measurements use the flags the release actually runs with. Operators can
+-- override with +RTS -Nn or +RTS -A16m, e.g. in cgroup-limited containers.
+common release-server-rts
+  ghc-options:
+    -threaded
+    -rtsopts
+    "-with-rtsopts=-N -A4m"
+
 executable pigeon-server
-  import: warnings, shared
+  import: warnings, shared, release-server-rts
   hs-source-dirs: app
   main-is: Server.hs
   build-depends:
     base,
     pigeon,
-
-  -- Use every capability: gzip workers are capped at eight, but TLS and
-  -- request handling still spread across the machine. A 4 MiB allocation area
-  -- per capability is enough to feed the eight 1 MiB gzip blocks without GC
-  -- thrash, whereas 16 MiB multiplied by every capability kept hundreds of
-  -- megabytes resident for no throughput gain.
-  -- Operators can override with +RTS -Nn or +RTS -A16m, e.g. in
-  -- cgroup-limited containers.
-  ghc-options:
-    -threaded
-    -rtsopts
-    "-with-rtsopts=-N -A4m"
 
 executable pigeon-client
   import: warnings, shared
@@ -156,6 +156,22 @@ executable pigeon-client
     -threaded
     -rtsopts
     "-with-rtsopts=-N8 -A4m"
+
+benchmark pigeon-bench
+  import: warnings, shared, release-server-rts
+  type: exitcode-stdio-1.0
+  hs-source-dirs: bench
+  main-is: Bench.hs
+  build-depends:
+    base,
+    bytestring,
+    conduit,
+    deepseq,
+    pigeon,
+    resourcet,
+    safe-exceptions,
+    tasty >=1.5 && <1.6,
+    tasty-bench >=0.5 && <0.6
 
 test-suite pigeon-test
   import: warnings, shared
