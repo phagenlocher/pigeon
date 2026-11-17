@@ -142,12 +142,13 @@ parallelGzipConduitWith workers
 
 {- | Compress blocks on a bounded pool while the conductor keeps reading.
 
-The window holds at most @workers@ blocks. Each iteration waits for the oldest
-result, emits it, and immediately submits the next block, so a read overlaps
-with the compression of every other block in the window instead of alternating
-with it. Results are emitted in input order. Workers also compute each block's
-CRC-32, so the trailer is folded from per-block CRCs rather than from a second
-pass over the input.
+The window holds at most @workers@ blocks, queued in a 'Seq' so the oldest
+handle is popped in constant time. Each iteration waits for the oldest result,
+emits it, and immediately submits the next block, so a read overlaps with the
+compression of every other block in the window instead of alternating with it.
+Results are emitted in input order. Workers also compute each block's CRC-32,
+so the trailer is folded from per-block CRCs rather than from a second pass
+over the input.
 
 Every worker is registered with the surrounding 'ResourceT' scope, so an
 exception anywhere in the pipeline releases the scope, cancels the remaining
@@ -158,15 +159,15 @@ compressPipelined workers = do
   window <- fill workers
   drain window 0 0
  where
-  fill :: Int -> ConduitT ByteString ByteString (ResourceT IO) [InFlight]
-  fill 0 = pure []
+  fill :: Int -> ConduitT ByteString ByteString (ResourceT IO) (Seq InFlight)
+  fill 0 = pure Seq.empty
   fill n =
     await >>= \case
-      Nothing -> pure []
+      Nothing -> pure Seq.empty
       Just block -> do
         pending <- start block
         rest <- fill (n - 1)
-        pure (pending : rest)
+        pure (pending Seq.<| rest)
 
   start :: ByteString -> ConduitT ByteString ByteString (ResourceT IO) InFlight
   start block = do
@@ -174,23 +175,25 @@ compressPipelined workers = do
     release <- register (cancel pending)
     pure InFlight{ifResult = pending, ifRelease = release}
 
-  drain :: [InFlight] -> Word32 -> Word32 -> ConduitT ByteString ByteString (ResourceT IO) ()
-  drain [] crc total = do
-    terminator <- liftIO finishEmptyBlock
-    yield terminator
-    yield (gzipTrailer crc total)
-  drain (InFlight{ifResult, ifRelease} : rest) crc total = do
-    result <- liftIO (wait ifResult)
-    void (unprotect ifRelease)
-    yield (cbCompressed result)
-    crc' <- liftIO (crc32Combine crc (cbCrc result) (cbOriginalSize result))
-    let total' :: Word32
-        total' = total + fromIntegral (cbOriginalSize result)
-    await >>= \case
-      Nothing -> drain rest crc' total'
-      Just block -> do
-        pending <- start block
-        drain (rest <> [pending]) crc' total'
+  drain :: Seq InFlight -> Word32 -> Word32 -> ConduitT ByteString ByteString (ResourceT IO) ()
+  drain window crc total =
+    case Seq.viewl window of
+      Seq.EmptyL -> do
+        terminator <- liftIO finishEmptyBlock
+        yield terminator
+        yield (gzipTrailer crc total)
+      InFlight{ifResult, ifRelease} Seq.:< rest -> do
+        result <- liftIO (wait ifResult)
+        void (unprotect ifRelease)
+        yield (cbCompressed result)
+        crc' <- liftIO (crc32Combine crc (cbCrc result) (cbOriginalSize result))
+        let total' :: Word32
+            total' = total + fromIntegral (cbOriginalSize result)
+        await >>= \case
+          Nothing -> drain rest crc' total'
+          Just block -> do
+            pending <- start block
+            drain (rest Seq.|> pending) crc' total'
 
 {- | One block compressed on a worker thread.
 
